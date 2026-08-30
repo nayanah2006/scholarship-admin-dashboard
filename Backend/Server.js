@@ -5,6 +5,7 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
 const { randomUUID } = require('crypto');
+const { parse } = require('csv-parse/sync');
 const fs = require('fs');
 const path = require('path');
 const session = require('express-session');
@@ -163,6 +164,55 @@ const pool = mysql.createPool(dbConfig);
 const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 let portalDataStatus = { source: 'mysql', lastSyncedAt: null, error: null };
 const defaultRequiredDocuments = ['Government ID proof', 'Income certificate', 'Academic marksheet', 'Admission proof'];
+const scholarshipCsvPath = path.resolve(__dirname, '..', '..', '..', 'collections', 'NSP_Scholarships_Text_Only.csv');
+
+function scholarshipAmount(awardDetails) {
+  const match = String(awardDetails || '').match(/INR\s*([\d,]+(?:\.\d+)?)/i);
+  return match ? Number(match[1].replace(/,/g, '')) : 0;
+}
+
+async function seedCsvScholarships(connection) {
+  if (!fs.existsSync(scholarshipCsvPath)) {
+    console.warn(`Scholarship CSV not found at ${scholarshipCsvPath}.`);
+    return;
+  }
+
+  const records = parse(fs.readFileSync(scholarshipCsvPath, 'utf8'), { columns: true, skip_empty_lines: true, trim: true });
+  const year = new Date().getFullYear();
+  const startDate = `${year}-01-01`;
+  const endDate = `${year}-12-31`;
+
+  for (const record of records) {
+    const name = String(record['Scholarship Name'] || '').trim();
+    if (!name) continue;
+    const description = [
+      String(record.Description || '').trim(),
+      `Eligibility: ${String(record.Eligibility || '').trim()}`,
+      `Award details: ${String(record['Award Details'] || '').trim()}`,
+      `Application timeline: ${String(record['Application Timeline'] || '').trim()}`,
+    ].filter(Boolean).join('\n\n');
+    const values = [
+      name,
+      description,
+      String(record['Provider Detail'] || '').trim(),
+      String(record.Category || '').trim(),
+      scholarshipAmount(record['Award Details']),
+      String(record.Category || '').trim(),
+      String(record.Eligibility || '').trim(),
+      null,
+      startDate,
+      endDate,
+      'active',
+    ];
+    const [existing] = await connection.query('SELECT id FROM scholarships WHERE name = ? LIMIT 1', [name]);
+    if (existing.length) {
+      await connection.query('UPDATE scholarships SET description = ?, provider = ?, scholarship_type = ?, amount = ?, category = ?, eligible_course = ?, start_date = ?, end_date = ?, status = ? WHERE id = ?', [...values.slice(1), existing[0].id]);
+    } else {
+      await connection.query('INSERT INTO scholarships (name, description, provider, scholarship_type, amount, category, eligible_course, district_name, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values);
+    }
+  }
+  console.log(`Verified ${records.length} NSP scholarships from ${path.basename(scholarshipCsvPath)}.`);
+}
 
 async function ensureScholarshipDocuments(connection, scholarshipId) {
   const [[count]] = await connection.query('SELECT COUNT(*) AS count FROM scholarship_required_documents WHERE scholarship_id = ?', [scholarshipId]);
@@ -260,6 +310,7 @@ async function initializeDatabase() {
     const bootstrapPool = mysql.createPool({ ...dbConfig, database: undefined });
     connection = await bootstrapPool.getConnection();
     await connection.query(schemaSql);
+    await seedCsvScholarships(connection);
     await ensureDistrictDashboardCoverage(connection);
     await ensureComplaintCategories(connection);
     const [scholarships] = await connection.query('SELECT id FROM scholarships');
