@@ -212,6 +212,35 @@ CREATE TABLE IF NOT EXISTS application_verification_stages (
   UNIQUE KEY unique_application_stage (application_id, stage_key)
 );
 
+CREATE TABLE IF NOT EXISTS application_approvals (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  application_id INT NOT NULL,
+  student_id VARCHAR(100) NOT NULL,
+  student_name VARCHAR(200) DEFAULT NULL,
+  scholarship_id INT DEFAULT NULL,
+  scholarship_name VARCHAR(200) DEFAULT NULL,
+  institution_name VARCHAR(200) DEFAULT NULL,
+  institution_status VARCHAR(40) NOT NULL DEFAULT 'pending',
+  government_status VARCHAR(40) NOT NULL DEFAULT 'pending',
+  status VARCHAR(40) NOT NULL DEFAULT 'pending_government_approval',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (application_id) REFERENCES scholarship_applications(id) ON DELETE CASCADE,
+  UNIQUE KEY unique_approval_application (application_id)
+);
+
+CREATE TABLE IF NOT EXISTS student_notifications (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  student_id VARCHAR(100) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  message TEXT NOT NULL,
+  notification_type VARCHAR(50) NOT NULL DEFAULT 'scholarship',
+  application_id INT DEFAULT NULL,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_student_notifications (student_id, is_read, created_at)
+);
+
 CREATE TABLE IF NOT EXISTS application_readiness_results (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   application_id INT NOT NULL,

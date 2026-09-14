@@ -15,10 +15,10 @@ Direct identifiers and protected attributes (`student_id`, `gender`, `caste`, `r
 
 ## Service
 
-Install dependencies from `ai/requirements.txt`, set `AI_MODEL_PATH` and `AI_PORT` as needed, and start:
+Install dependencies from `ai/requirements.txt`, then start the recommendation service before starting the Node backend:
 
 ```bash
-python ai/recommendation/service.py
+python ai/service.py
 ```
 
-The Node API calls `POST /recommend`. When no trained artifact exists, the API returns a clear unavailable response and does not create prediction records. Successful predictions are stored with model version and timestamp in MySQL.
+The service listens on `http://127.0.0.1:5100` by default. Set `AI_PORT`, `AI_HOST`, or `AI_DATASET_PATH` to change its configuration. The Node API calls `POST /recommend` through `AI_SERVICE_URL`. Successful predictions are stored with the returned model version and timestamp in MySQL.

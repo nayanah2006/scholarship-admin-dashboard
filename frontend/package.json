@@ -19,6 +19,7 @@
   },
   "scripts": {
     "start": "react-scripts start",
+    "dev": "react-scripts start",
     "server": "node Backend/Server.js",
     "build": "react-scripts build",
     "test": "react-scripts test",

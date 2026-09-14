@@ -9,16 +9,19 @@ const { parse } = require('csv-parse/sync');
 const fs = require('fs');
 const path = require('path');
 const session = require('express-session');
+const { spawn } = require('child_process');
 
 const app = express();
 const PORT = Number(process.env.PORT || 5000);
 const HOST = process.env.HOST || '0.0.0.0';
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5100';
+const AI_AUTOSTART = process.env.AI_AUTOSTART !== 'false';
+const AI_SERVICE_SCRIPT = path.resolve(__dirname, '..', 'ai', 'service.py');
 const DISTRICT_DATA_URL = process.env.DISTRICT_DATA_URL || '';
 const uploadDirectory = path.resolve(__dirname, process.env.UPLOAD_DIR || 'uploads');
 fs.mkdirSync(uploadDirectory, { recursive: true });
 
-const allowedMimeTypes = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+const allowedMimeTypes = new Set(['application/pdf', 'text/plain', 'image/jpeg', 'image/png']);
 const upload = multer({
   storage: multer.diskStorage({
     destination: uploadDirectory,
@@ -28,125 +31,77 @@ const upload = multer({
   fileFilter: (req, file, callback) => callback(allowedMimeTypes.has(file.mimetype) ? null : new Error('INVALID_FILE_TYPE')),
 });
 
-const fallbackPortalData = {
-  'Bengaluru Urban': {
-    code: '101',
-    instCount: '2,410',
-    regCount: '452,103',
-    approvedCount: '398,401',
-    pendingCount: '53,702',
-    coverage: 88,
-    categories: [
-      { id: 'schools', name: 'Schools', sub: 'Primary & Secondary Education', total: 1432, students: '425k', approved: '284,102', rate: '82.4%', badge: '+2.1%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Vocational & Junior Colleges', total: 648, students: '186k', approved: '142,509', rate: '75.1%', badge: '-0.5%', badgeColor: 'bg-red-50 text-red-600' },
-      { id: 'univ', name: 'Universities', sub: 'Undergraduate & Tech Studies', total: 82, students: '312k', approved: '198,334', rate: '90.2%', badge: '+5.4%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'pg', name: 'Postgraduate Institutions', sub: 'Masters, Doctoral & Research', total: 124, students: '45k', approved: '32,110', rate: '62.8%', badge: 'STABLE', badgeColor: 'bg-slate-100 text-slate-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU12849', name: "Government PU College, Jayanagar", total: '1,240', applied: '1,140', pct: '92%', approved: '1,140', rejected: '40', pending: '60', disbursed: '₹12.4L' },
-        { id: 'PU33012', name: "St. Joseph's Pre-University College", total: '2,850', applied: '2,109', pct: '74%', approved: '2,109', rejected: '121', pending: '620', disbursed: '₹28.5L' },
-        { id: 'PU88211', name: 'Seshadripuram PU College, Yelahanka', total: '1,890', applied: '907', pct: '48%', approved: '907', rejected: '93', pending: '890', disbursed: '₹9.8L' },
-        { id: 'PU00291', name: 'Mount Carmel Pre-University College', total: '3,200', applied: '2,816', pct: '88%', approved: '2,816', rejected: '70', pending: '314', disbursed: '₹34.1L' }
-      ],
-      schools: [
-        { id: 'SCH101', name: 'Government High School, Malleshwaram', total: '850', applied: '800', pct: '94%', approved: '780', rejected: '10', pending: '10', disbursed: '₹5.2L' },
-        { id: 'SCH102', name: 'National High School, Basavanagudi', total: '1,100', applied: '950', pct: '86%', approved: '910', rejected: '25', pending: '15', disbursed: '₹7.8L' }
-      ],
-      univ: [
-        { id: 'UNV001', name: 'Bangalore University, Jnana Bharathi', total: '12,400', applied: '11,800', pct: '95%', approved: '11,200', rejected: '300', pending: '300', disbursed: '₹1.4Cr' }
-      ],
-      pg: [
-        { id: 'PG001', name: 'Indian Institute of Science (IISc)', total: '3,200', applied: '2,900', pct: '90%', approved: '2,800', rejected: '50', pending: '50', disbursed: '₹85L' }
-      ]
-    }
-  },
-  Mysuru: {
-    code: '104',
-    instCount: '1,120',
-    regCount: '184,200',
-    approvedCount: '152,400',
-    pendingCount: '31,800',
-    coverage: 76,
-    categories: [
-      { id: 'schools', name: 'Schools', sub: 'Primary & Secondary Education', total: 680, students: '110k', approved: '92,100', rate: '83.7%', badge: '+1.2%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Vocational & Junior Colleges', total: 310, students: '45k', approved: '38,200', rate: '84.8%', badge: '+3.1%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'univ', name: 'Universities', sub: 'Undergraduate & Tech Studies', total: 24, students: '82k', approved: '68,400', rate: '83.4%', badge: '+0.8%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'pg', name: 'Postgraduate Institutions', sub: 'Masters, Doctoral & Research', total: 42, students: '18k', approved: '14,200', rate: '78.8%', badge: '+1.5%', badgeColor: 'bg-emerald-50 text-emerald-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU2201', name: 'Maharanis PU College for Women, Mysuru', total: '2,100', applied: '1,950', pct: '92%', approved: '1,880', rejected: '30', pending: '40', disbursed: '₹21.0L' },
-        { id: 'PU2202', name: 'Marimallappa PU College, Mysuru', total: '1,980', applied: '1,800', pct: '90%', approved: '1,750', rejected: '20', pending: '30', disbursed: '₹18.5L' }
-      ]
-    }
-  },
-  Belagavi: {
-    code: '112',
-    instCount: '1,450',
-    regCount: '212,800',
-    approvedCount: '168,400',
-    pendingCount: '44,400',
-    coverage: 82,
-    categories: [
-      { id: 'schools', name: 'Schools', sub: 'Primary & Secondary Education', total: 890, students: '130k', approved: '105,000', rate: '80.7%', badge: '+0.4%', badgeColor: 'bg-emerald-50 text-emerald-600' },
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Vocational & Junior Colleges', total: 420, students: '58k', approved: '44,100', rate: '76.0%', badge: '-1.2%', badgeColor: 'bg-red-50 text-red-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU3301', name: 'RLS Pre-University College, Belagavi', total: '1,500', applied: '1,350', pct: '90%', approved: '1,280', rejected: '40', pending: '30', disbursed: '₹14.2L' }
-      ]
-    }
-  },
-  'Hubballi-Dharwad': {
-    code: '118',
-    instCount: '890',
-    regCount: '125,400',
-    approvedCount: '108,200',
-    pendingCount: '17,200',
-    coverage: 86,
-    categories: [
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Junior Colleges', total: 240, students: '35k', approved: '29,100', rate: '83.1%', badge: '+2.0%', badgeColor: 'bg-emerald-50 text-emerald-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU4401', name: 'Kittel Junior College, Dharwad', total: '1,100', applied: '980', pct: '89%', approved: '940', rejected: '20', pending: '20', disbursed: '₹10.1L' }
-      ]
-    }
-  },
-  Mangaluru: {
-    code: '125',
-    instCount: '740',
-    regCount: '98,200',
-    approvedCount: '89,500',
-    pendingCount: '8,700',
-    coverage: 91,
-    categories: [
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Junior Colleges', total: 180, students: '28k', approved: '25,400', rate: '90.7%', badge: '+4.1%', badgeColor: 'bg-emerald-50 text-emerald-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU5501', name: 'St. Aloysius PU College, Mangaluru', total: '3,100', applied: '2,950', pct: '95%', approved: '2,900', rejected: '25', pending: '25', disbursed: '₹32.0L' }
-      ]
-    }
-  },
-  Kalaburagi: {
-    code: '132',
-    instCount: '1,210',
-    regCount: '165,900',
-    approvedCount: '112,400',
-    pendingCount: '53,500',
-    coverage: 68,
-    categories: [
-      { id: 'pu', name: 'Pre-University Colleges', sub: 'Junior Colleges', total: 390, students: '48k', approved: '32,100', rate: '66.8%', badge: '-3.5%', badgeColor: 'bg-red-50 text-red-600' }
-    ],
-    institutions: {
-      pu: [
-        { id: 'PU6601', name: 'Government PU College, Kalaburagi', total: '1,600', applied: '1,100', pct: '68%', approved: '980', rejected: '60', pending: '60', disbursed: '₹9.5L' }
-      ]
-    }
-  }
-};
+const karnatakaDistricts = [
+  ['Bengaluru Urban', '101'], ['Bengaluru Rural', '102'], ['Bagalkot', '103'], ['Ballari', '104'], ['Belagavi', '105'], ['Bidar', '106'], ['Chamarajanagar', '107'], ['Chikkamagaluru', '108'], ['Chitradurga', '109'], ['Dakshina Kannada', '110'], ['Davanagere', '111'], ['Dharwad', '112'], ['Gadag', '113'], ['Hassan', '114'], ['Haveri', '115'], ['Kalaburagi', '116'], ['Kodagu', '117'], ['Kolar', '118'], ['Koppal', '119'], ['Mandya', '120'], ['Mangaluru', '121'], ['Mysuru', '122'], ['Raichur', '123'], ['Ramanagara', '124'], ['Shivamogga', '125'], ['Tumakuru', '126'], ['Udupi', '127'], ['Vijayapura', '128'], ['Vijayanagara', '129'], ['Yadgir', '130'], ['Uttara Kannada', '131'],
+];
+
+const districtCategories = [
+  ['schools', 'Schools', 'Primary & Secondary Education'],
+  ['pu', 'Pre-University Colleges', 'Vocational & Junior Colleges'],
+  ['univ', 'Universities', 'Undergraduate & Tech Studies'],
+  ['pg', 'Postgraduate Institutions', 'Masters, Doctoral & Research'],
+];
+
+function buildFallbackPortalData() {
+  return Object.fromEntries(
+    karnatakaDistricts.map(([name, code], districtIndex) => {
+      const regCount = 92000 + districtIndex * 7600;
+      const approvedCount = Math.round(regCount * (0.68 + (districtIndex % 6) * 0.02));
+      const pendingCount = regCount - approvedCount;
+      const coverage = 62 + (districtIndex % 26);
+
+      const categories = districtCategories.map(([categoryId, categoryName, sub], categoryIndex) => ({
+        id: categoryId,
+        name: categoryName,
+        sub,
+        total: 480 + districtIndex * 18 + categoryIndex * 85,
+        students: `${(26 + districtIndex * 3 + categoryIndex * 8)}k`,
+        approved: (Math.round((6200 + districtIndex * 220 + categoryIndex * 340) * (0.7 + categoryIndex * 0.05))).toLocaleString('en-IN'),
+        rate: `${Math.min(96, 68 + districtIndex + categoryIndex * 6)}%`,
+        badge: categoryIndex % 2 === 0 ? '+1.3%' : '-0.8%',
+        badgeColor: categoryIndex % 2 === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600',
+      }));
+
+      const institutions = {};
+      districtCategories.forEach(([categoryId, categoryName], categoryIndex) => {
+        institutions[categoryId] = Array.from({ length: 20 }, (_, institutionIndex) => {
+          const applied = 320 + districtIndex * 20 + categoryIndex * 40 + institutionIndex * 11;
+          const approved = Math.round(applied * (0.68 + ((districtIndex + categoryIndex) % 5) * 0.04));
+          const pending = Math.max(6, applied - approved);
+          const label = categoryId === 'schools' ? 'School' : categoryId === 'pu' ? 'PU College' : categoryId === 'univ' ? 'College' : 'Research Centre';
+          const institutionName = `${label} ${institutionIndex + 1}, ${name}`;
+          return {
+            id: `${categoryId.toUpperCase()}${String(districtIndex + 1).padStart(2, '0')}${String(institutionIndex + 1).padStart(2, '0')}`,
+            name: institutionName,
+            total: String(applied + 120),
+            applied: String(applied),
+            pct: `${Math.min(98, 66 + (institutionIndex % 8) * 3 + categoryIndex * 4)}%`,
+            approved: String(approved),
+            rejected: String(Math.max(5, Math.round(applied * 0.06))),
+            pending: String(pending),
+            disbursed: `₹${(approved * 0.18).toFixed(1)}L`,
+          };
+        });
+      });
+
+      return [
+        name,
+        {
+          code,
+          instCount: String(820 + districtIndex * 52),
+          regCount: regCount.toLocaleString('en-IN'),
+          approvedCount: approvedCount.toLocaleString('en-IN'),
+          pendingCount: pendingCount.toLocaleString('en-IN'),
+          coverage,
+          categories,
+          institutions,
+        },
+      ];
+    })
+  );
+}
+
+const fallbackPortalData = buildFallbackPortalData();
 
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
@@ -161,10 +116,33 @@ const dbConfig = {
 };
 
 const pool = mysql.createPool(dbConfig);
+let aiProcess;
 const schemaSql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 let portalDataStatus = { source: 'mysql', lastSyncedAt: null, error: null };
 const defaultRequiredDocuments = ['Government ID proof', 'Income certificate', 'Academic marksheet', 'Admission proof'];
-const scholarshipCsvPath = path.resolve(__dirname, '..', '..', '..', 'collections', 'NSP_Scholarships_Text_Only.csv');
+const scholarshipCsvPath = path.resolve(__dirname, '..', '..', 'collections', 'NSP_Scholarships_Text_Only.csv');
+const recommendationCsvPath = path.resolve(__dirname, '..', '..', 'collections', 'scholarships1_cleaned.csv');
+
+async function ensureAiService() {
+  if (!AI_AUTOSTART || aiProcess || !AI_SERVICE_URL.includes('127.0.0.1') && !AI_SERVICE_URL.includes('localhost')) return;
+  try {
+    const response = await fetch(`${AI_SERVICE_URL}/health`);
+    if (response.ok) return;
+  } catch (error) {
+    // Start the local Python service when the configured endpoint is unavailable.
+  }
+  if (!fs.existsSync(AI_SERVICE_SCRIPT)) {
+    console.warn(`AI service script not found at ${AI_SERVICE_SCRIPT}.`);
+    return;
+  }
+  const pythonCommand = process.env.PYTHON_COMMAND || (process.platform === 'win32' ? 'python' : 'python3');
+  aiProcess = spawn(pythonCommand, ['-u', AI_SERVICE_SCRIPT], { cwd: path.dirname(AI_SERVICE_SCRIPT), stdio: 'inherit', windowsHide: true });
+  aiProcess.once('error', (error) => {
+    console.warn(`AI service could not be started: ${error.message}`);
+    aiProcess = null;
+  });
+  aiProcess.once('exit', () => { aiProcess = null; });
+}
 
 function scholarshipAmount(awardDetails) {
   const match = String(awardDetails || '').match(/INR\s*([\d,]+(?:\.\d+)?)/i);
@@ -177,7 +155,7 @@ async function seedCsvScholarships(connection) {
     return;
   }
 
-  const records = parse(fs.readFileSync(scholarshipCsvPath, 'utf8'), { columns: true, skip_empty_lines: true, trim: true });
+  const records = parse(fs.readFileSync(scholarshipCsvPath, 'utf8'), { bom: true, columns: true, skip_empty_lines: true, trim: true });
   const year = new Date().getFullYear();
   const startDate = `${year}-01-01`;
   const endDate = `${year}-12-31`;
@@ -206,12 +184,40 @@ async function seedCsvScholarships(connection) {
     ];
     const [existing] = await connection.query('SELECT id FROM scholarships WHERE name = ? LIMIT 1', [name]);
     if (existing.length) {
-      await connection.query('UPDATE scholarships SET description = ?, provider = ?, scholarship_type = ?, amount = ?, category = ?, eligible_course = ?, start_date = ?, end_date = ?, status = ? WHERE id = ?', [...values.slice(1), existing[0].id]);
+      await connection.query('UPDATE scholarships SET description = ?, provider = ?, scholarship_type = ?, amount = ?, category = ?, eligible_course = ?, district_name = ?, start_date = ?, end_date = ?, status = ? WHERE id = ?', [...values.slice(1), existing[0].id]);
     } else {
       await connection.query('INSERT INTO scholarships (name, description, provider, scholarship_type, amount, category, eligible_course, district_name, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values);
     }
   }
   console.log(`Verified ${records.length} NSP scholarships from ${path.basename(scholarshipCsvPath)}.`);
+}
+
+function recommendationAmount(value) {
+  const match = String(value || '').replace(/,/g, '').match(/(?:inr|rs\.?|₹|usd|gbp|eur|aud)?\s*([\d.]+)/i);
+  return match ? Number(match[1]) : 0;
+}
+
+async function seedRecommendationScholarships(connection) {
+  if (!fs.existsSync(recommendationCsvPath)) {
+    console.warn(`Recommendation scholarship CSV not found at ${recommendationCsvPath}.`);
+    return;
+  }
+  const records = parse(fs.readFileSync(recommendationCsvPath, 'utf8'), { bom: true, columns: true, skip_empty_lines: true, trim: true });
+  const year = new Date().getFullYear();
+  for (const record of records) {
+    const name = String(record.title_clean || record.title || '').trim();
+    if (!name) continue;
+    const open = ['active', 'open', 'featured'].includes(String(record.status || '').trim().toLowerCase()) || String(record.deadline || '').toLowerCase().includes('always open');
+    const description = [String(record.eligibility || '').trim(), `Award: ${String(record.award || '').trim()}`, `Category: ${String(record.category || '').trim()}`].filter(Boolean).join('\n\n');
+    const values = [name, description || name, 'Scholarship catalog', String(record.category || '').trim() || 'Scholarship', recommendationAmount(record.award), String(record.category || '').trim(), String(record.eligibility || '').trim(), null, `${year}-01-01`, open ? '2099-12-31' : `${year - 1}-12-31`, open ? 'active' : 'inactive'];
+    const [existing] = await connection.query('SELECT id FROM scholarships WHERE name = ? LIMIT 1', [name]);
+    if (existing.length) {
+      await connection.query('UPDATE scholarships SET description = ?, provider = ?, scholarship_type = ?, amount = ?, category = ?, eligible_course = ?, district_name = ?, start_date = ?, end_date = ?, status = ? WHERE id = ?', [...values.slice(1), existing[0].id]);
+    } else {
+      await connection.query('INSERT INTO scholarships (name, description, provider, scholarship_type, amount, category, eligible_course, district_name, start_date, end_date, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values);
+    }
+  }
+  console.log(`Verified ${records.length} recommendation scholarships from ${path.basename(recommendationCsvPath)}.`);
 }
 
 async function ensureScholarshipDocuments(connection, scholarshipId) {
@@ -231,11 +237,20 @@ async function ensureComplaintCategories(connection) {
   ]]);
 }
 
+async function ensureReadinessFactors(connection) {
+  const [[count]] = await connection.query('SELECT COUNT(*) AS count FROM readiness_factors WHERE scholarship_id IS NULL AND active = 1');
+  if (Number(count.count) > 0) return;
+  await connection.query('INSERT INTO readiness_factors (scholarship_id, factor_key, factor_name, weight, config_json, active) VALUES ?', [[
+    [null, 'required_documents', 'Required documents', 40, JSON.stringify({}), true],
+    [null, 'document_verification', 'Document verification', 30, JSON.stringify({}), true],
+    [null, 'student_information', 'Student information', 20, JSON.stringify({ required_profile_keys: ['income', 'marks', 'course', 'institution_type'] }), true],
+    [null, 'required_fields', 'Required application fields', 10, JSON.stringify({}), true],
+  ]]);
+}
+
 async function ensureDistrictDashboardCoverage(connection) {
   const districts = [
-    ['Bengaluru Urban', '101'], ['Mysuru', '104'], ['Belagavi', '112'], ['Hubballi-Dharwad', '118'], ['Mangaluru', '125'],
-    ['Kalaburagi', '132'], ['Shivamogga', '139'], ['Tumakuru', '146'], ['Ballari', '153'], ['Vijayapura', '160'],
-    ['Davanagere', '167'], ['Hassan', '174'], ['Mandya', '181'], ['Raichur', '188'], ['Udupi', '195'],
+    ['Bengaluru Urban', '101'], ['Bengaluru Rural', '102'], ['Bagalkot', '103'], ['Ballari', '104'], ['Belagavi', '105'], ['Bidar', '106'], ['Chamarajanagar', '107'], ['Chikkamagaluru', '108'], ['Chitradurga', '109'], ['Dakshina Kannada', '110'], ['Davanagere', '111'], ['Dharwad', '112'], ['Gadag', '113'], ['Hassan', '114'], ['Haveri', '115'], ['Kalaburagi', '116'], ['Kodagu', '117'], ['Kolar', '118'], ['Koppal', '119'], ['Mandya', '120'], ['Mangaluru', '121'], ['Mysuru', '122'], ['Raichur', '123'], ['Ramanagara', '124'], ['Shivamogga', '125'], ['Tumakuru', '126'], ['Udupi', '127'], ['Vijayapura', '128'], ['Vijayanagara', '129'], ['Yadgir', '130'], ['Uttara Kannada', '131'],
   ];
   const categories = [
     ['schools', 'Schools', 'Primary and Secondary Education'],
@@ -244,34 +259,10 @@ async function ensureDistrictDashboardCoverage(connection) {
     ['pg', 'Postgraduate Institutions', 'Masters, Doctoral and Research'],
   ];
   const institutionNames = {
-    schools: [
-      'Kendriya Vidyalaya No. 1', 'National Public School', 'Bishop Cotton Boys School',
-      'Bishop Cotton Girls School', 'Government High School', 'St. Josephs Indian High School',
-      'Bangalore International School', 'Vidyashilp Academy', 'Army Public School',
-      'Mallya Aditi International School', 'Delhi Public School', 'Sophia High School',
-      'The Frank Anthony Public School', 'Sri Kumaran Childrens Home', 'Maxwell Public School',
-    ],
-    pu: [
-      'Government PU College', 'St. Josephs Pre-University College', 'Mount Carmel PU College',
-      'MES Pre-University College', 'Maharani Lakshmi Ammanni College', 'Bangalore Central PU College',
-      'National College Basavanagudi', 'Christ Junior College', 'Vijaya College',
-      'Seshadripuram Pre-University College', 'RV PU College', 'BMS College for Women',
-      'Bangalore University Pre-University College', 'Aurobindo Memorial School and PU College', 'Brilliant PU College',
-    ],
-    univ: [
-      'Bangalore University', 'University Visvesvaraya College of Engineering', 'Christ University',
-      'BMS College of Engineering', 'RV College of Engineering', 'PES University',
-      'MS Ramaiah Institute of Technology', 'Bangalore Institute of Technology', 'Mount Carmel College',
-      'St. Josephs University', 'Jain University', 'Dayananda Sagar University',
-      'CMR University', 'Alliance University', 'Reva University',
-    ],
-    pg: [
-      'Indian Institute of Science', 'Indian Institute of Management Bangalore', 'National Institute of Mental Health',
-      'University of Agricultural Sciences Bangalore', 'Tata Institute of Fundamental Research', 'Jawaharlal Nehru Centre for Advanced Scientific Research',
-      'National Institute of Design and Research', 'Bangalore University PG Centre', 'Christ University Graduate School',
-      'Indian Statistical Institute Bangalore', 'National Law School of India University', 'Raman Research Institute',
-      'Institute for Social and Economic Change', 'M.S. Ramaiah University of Applied Sciences', 'Jain University Research Centre',
-    ],
+    schools: Array.from({ length: 20 }, (_, index) => `${['Government', 'National', 'St. Josephs', 'Kendriya', 'Bharathi', 'Mahatma', 'Public', 'Delhi', 'Jain', 'Bishop', 'Saraswati', 'Vivekananda', 'Little Star', 'Carmel', 'Aadya', 'Navodaya', 'The Learning', 'Mysore', 'Mount Litera', 'Sahyadri'][index % 20]} School ${index + 1}, ${index % 3 === 0 ? 'Bengaluru' : index % 3 === 1 ? 'Mysuru' : 'Belagavi'}`),
+    pu: Array.from({ length: 20 }, (_, index) => `${['Government', 'St. Josephs', 'Mount Carmel', 'National', 'MES', 'Maharani', 'KLE', 'Narayana', 'Jain', 'Bharathi', 'Vivekananda', 'Shree', 'Mahatma', 'Seshadripuram', 'Carmel', 'Navodaya', 'Mysore', 'Karnataka', 'Rural', 'Basaveshwar'][index % 20]} PU College ${index + 1}`),
+    univ: Array.from({ length: 20 }, (_, index) => `${['Bangalore University', 'Mysore University', 'Karnatak University', 'JSS University', 'Christ University', 'Ramaiah University', 'Siddaganga University', 'KLE University', 'NITTE University', 'Mangalore University', 'BMS College', 'PES University', 'RV University', 'Alliance University', 'Government College', 'Vijaya College', 'Maharaja College', 'Dharwad University', 'Rural Institute', 'Engineering College'][index % 20]} ${index + 1}`),
+    pg: Array.from({ length: 20 }, (_, index) => `${['Indian Institute', 'Research Centre', 'PG Studies', 'Graduate School', 'Management Institute', 'Medical Research Centre', 'Science Centre', 'Technology Hub', 'Education Research Wing', 'Advanced Studies', 'Business School', 'Development Centre', 'Applied Research Lab', 'Law Studies Centre', 'Agriculture PG Centre', 'Engineering Research', 'Art & Culture Centre', 'Health Sciences Institute', 'Innovation Hub', 'Social Science Centre'][index % 20]} ${index + 1}`),
   };
   const districtRows = districts.map(([name, code], index) => {
     const registered = 120000 + index * 7300;
@@ -282,11 +273,11 @@ async function ensureDistrictDashboardCoverage(connection) {
   const institutionRows = [];
   districts.forEach(([districtName], districtIndex) => {
     categories.forEach(([categoryId, categoryName, categorySub], categoryIndex) => {
-      const totalCount = 15;
+      const totalCount = 20;
       const students = `${(18 + districtIndex * 2 + categoryIndex * 5)}k`;
       const rate = 68 + ((districtIndex + categoryIndex * 3) % 25);
       categoryRows.push([districtName, categoryId, categoryName, categorySub, totalCount, students, `${Math.round(totalCount * rate / 100)}`, `${rate}%`, rate >= 80 ? '+2.0%' : '-1.0%', rate >= 80 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600', categoryIndex + 1]);
-      for (let institutionIndex = 1; institutionIndex <= 15; institutionIndex += 1) {
+      for (let institutionIndex = 1; institutionIndex <= 20; institutionIndex += 1) {
         const applied = 300 + districtIndex * 20 + categoryIndex * 30 + institutionIndex * 7;
         const approved = Math.round(applied * rate / 100);
         const pending = applied - approved;
@@ -303,16 +294,80 @@ async function ensureDistrictDashboardCoverage(connection) {
   }
 }
 
+async function upsertApprovalRecord({ applicationId, studentId, studentName, scholarshipId, scholarshipName, institutionName, institutionStatus = 'pending', governmentStatus = 'pending', status = 'pending_government_approval' }) {
+  const [[application]] = await pool.query(`
+    SELECT sa.id, sa.student_id, sa.status,
+           s.name AS scholarship_name,
+           CONCAT(COALESCE(sp.first_name, ''), ' ', COALESCE(sp.last_name, '')) AS student_name
+    FROM scholarship_applications sa
+    LEFT JOIN scholarships s ON s.id = sa.scholarship_id
+    LEFT JOIN student_profiles sp ON sp.student_id = sa.student_id
+    WHERE sa.id = ?
+  `, [applicationId]);
+
+  if (!application) {
+    const error = new Error('Application not found.');
+    error.code = 'APP_NOT_FOUND';
+    throw error;
+  }
+
+  const resolvedStudentId = studentId || application.student_id || '';
+  const resolvedStudentName = studentName || application.student_name || resolvedStudentId;
+  const resolvedScholarshipName = scholarshipName || application.scholarship_name || 'Scholarship application';
+  const resolvedInstitutionName = institutionName || 'Institution verification';
+
+  await pool.query(`
+    INSERT INTO application_approvals (
+      application_id, student_id, student_name, scholarship_id, scholarship_name,
+      institution_name, institution_status, government_status, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      student_id = VALUES(student_id),
+      student_name = VALUES(student_name),
+      scholarship_id = VALUES(scholarship_id),
+      scholarship_name = VALUES(scholarship_name),
+      institution_name = VALUES(institution_name),
+      institution_status = VALUES(institution_status),
+      government_status = VALUES(government_status),
+      status = VALUES(status),
+      updated_at = CURRENT_TIMESTAMP
+  `, [
+    applicationId,
+    resolvedStudentId,
+    resolvedStudentName,
+    scholarshipId || application.scholarship_id || null,
+    resolvedScholarshipName,
+    resolvedInstitutionName,
+    institutionStatus,
+    governmentStatus,
+    status,
+  ]);
+
+  const [[record]] = await pool.query('SELECT * FROM application_approvals WHERE application_id = ?', [applicationId]);
+  return record;
+}
+
+async function addStudentNotification(studentId, title, message, options = {}) {
+  const applicationId = options.applicationId || null;
+  const notificationType = options.notificationType || 'scholarship';
+  await pool.query(`
+    INSERT INTO student_notifications (student_id, title, message, notification_type, application_id)
+    VALUES (?, ?, ?, ?, ?)
+  `, [studentId, title, message, notificationType, applicationId]);
+}
+
 async function initializeDatabase() {
   let connection;
 
   try {
-    const bootstrapPool = mysql.createPool({ ...dbConfig, database: undefined });
+    const bootstrapPool = mysql.createPool(dbConfig);
     connection = await bootstrapPool.getConnection();
     await connection.query(schemaSql);
-    await seedCsvScholarships(connection);
+    await seedCsvScholarships(pool);
+    await seedRecommendationScholarships(connection);
     await ensureDistrictDashboardCoverage(connection);
     await ensureComplaintCategories(connection);
+    await ensureReadinessFactors(connection);
     const [scholarships] = await connection.query('SELECT id FROM scholarships');
     for (const scholarship of scholarships) await ensureScholarshipDocuments(connection, scholarship.id);
     try {
@@ -477,17 +532,23 @@ async function fetchPortalDataFromInternet() {
   }
 }
 
+function mergeDistrictData(primaryData) {
+  const baseData = buildFallbackPortalData();
+  const safePrimary = primaryData && typeof primaryData === 'object' ? primaryData : {};
+  return { ...baseData, ...safePrimary };
+}
+
 async function getPortalData() {
   try {
     const internetData = await fetchPortalDataFromInternet();
-    if (internetData) return internetData;
+    if (internetData) return mergeDistrictData(internetData);
     const data = await fetchPortalDataFromMysql();
     portalDataStatus = { ...portalDataStatus, source: 'mysql', lastSyncedAt: new Date().toISOString() };
-    return data && Object.keys(data).length ? data : fallbackPortalData;
+    return mergeDistrictData(data && Object.keys(data).length ? data : fallbackPortalData);
   } catch (error) {
     console.error('Unable to fetch portal data:', error.message);
     portalDataStatus = { ...portalDataStatus, source: 'fallback', error: error.message };
-    return fallbackPortalData;
+    return mergeDistrictData(fallbackPortalData);
   }
 }
 
@@ -788,8 +849,12 @@ function evaluateRule(rule, profile) {
   return { rule: rule.description || rule.rule_key, passed, actual, required: expected, operator: rule.operator };
 }
 
-async function getRecommendationPrediction(candidates) {
-  const response = await fetch(`${AI_SERVICE_URL}/recommend`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ candidates }) });
+async function getRecommendationPrediction(candidates, student, documents = []) {
+  const response = await fetch(`${AI_SERVICE_URL}/recommend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candidates, student, documents }),
+  });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.message || 'Recommendation model is unavailable.');
   return payload;
@@ -799,9 +864,13 @@ app.post('/api/recommendations', async (req, res) => {
   const studentId = String(req.body.student_id || '').trim();
   if (!studentId) return res.status(400).json({ success: false, message: 'student_id is required.' });
   try {
-    const [profileRows] = await pool.query('SELECT profile_json FROM student_profiles WHERE student_id = ?', [studentId]);
+    const [[profileRows], [documentRows]] = await Promise.all([
+      pool.query('SELECT profile_json FROM student_profiles WHERE student_id = ?', [studentId]),
+      pool.query(`SELECT d.original_name FROM application_documents d JOIN scholarship_applications a ON a.id = d.application_id WHERE a.student_id = ? ORDER BY d.uploaded_at DESC`, [studentId]),
+    ]);
     if (!profileRows.length) return res.status(404).json({ success: false, message: 'Student profile not found.' });
     const profile = parseJson(profileRows[0].profile_json, {});
+    const submittedDocuments = Array.isArray(req.body.documents) ? req.body.documents.filter((document) => document && typeof document === 'object').slice(0, 10) : [];
     const [scholarships] = await pool.query(`SELECT id, name, provider, scholarship_type, amount, category, eligible_course, district_name FROM scholarships WHERE status = 'active' AND CURDATE() BETWEEN start_date AND end_date ORDER BY id`);
     if (!scholarships.length) return res.json({ success: true, data: { model_available: false, recommendations: [], message: 'No open scholarships are available.' } });
     const scholarshipIds = scholarships.map((scholarship) => scholarship.id);
@@ -827,7 +896,11 @@ app.post('/api/recommendations', async (req, res) => {
       provider: scholarship.provider,
     }));
     let prediction;
-    try { prediction = await getRecommendationPrediction(candidates); } catch (modelError) {
+    const documents = [
+      ...submittedDocuments,
+      ...documentRows.map((document) => ({ text: document.original_name })),
+    ];
+    try { prediction = await getRecommendationPrediction(candidates, profile, documents); } catch (modelError) {
       return res.status(503).json({ success: false, model_available: false, message: 'Recommendation model is not available. No AI prediction was generated.', detail: modelError.message });
     }
     const recommendations = eligibility.map((item, index) => ({
@@ -843,7 +916,12 @@ app.post('/api/recommendations', async (req, res) => {
       const [run] = await connection.query('INSERT INTO ai_recommendation_runs (student_id, model_version, model_available) VALUES (?, ?, ?)', [studentId, prediction.model_version, true]);
       for (const item of recommendations) await connection.query('INSERT INTO ai_recommendation_items (run_id, scholarship_id, recommendation_score, eligible, reason) VALUES (?, ?, ?, ?, ?)', [run.insertId, item.scholarship.id, item.recommendation_score, item.eligible, item.reason]);
       await connection.commit();
-      return res.json({ success: true, data: { run_id: run.insertId, model_available: true, model_version: prediction.model_version, generated_at: new Date().toISOString(), recommendations } });
+      const scholarshipByName = new Map(scholarships.map((scholarship) => [scholarship.name, scholarship]));
+      const catalogRecommendations = (prediction.recommendations || []).map((item) => ({
+        ...item,
+        scholarship: scholarshipByName.get(item.title) || null,
+      })).filter((item) => item.scholarship);
+      return res.json({ success: true, data: { run_id: run.insertId, model_available: true, model_version: prediction.model_version, generated_at: new Date().toISOString(), recommendations, catalog_recommendations: catalogRecommendations } });
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Recommendations could not be generated.' });
@@ -953,6 +1031,23 @@ async function handleApplicationSubmission(req, res) {
   const studentId = req.student.id;
   const status = req.body.status === 'draft' ? 'draft' : 'submitted';
   const values = parseJson(req.body.form_data, req.body.form_data || {});
+  const encodedDocuments = parseJson(req.body.document_payload, []);
+  if ((!req.files || !req.files.length) && Array.isArray(encodedDocuments)) {
+    req.files = encodedDocuments.filter((document) => document && document.fieldName && document.content).map((document) => {
+      const originalName = path.basename(String(document.originalName || 'document.bin'));
+      const storedName = `${randomUUID()}${path.extname(originalName).toLowerCase()}`;
+      const storagePath = path.join(uploadDirectory, storedName);
+      fs.writeFileSync(storagePath, Buffer.from(String(document.content), 'base64'));
+      return {
+        fieldname: String(document.fieldName),
+        originalname: originalName,
+        filename: storedName,
+        mimetype: String(document.mimeType || 'application/octet-stream'),
+        size: fs.statSync(storagePath).size,
+        path: storagePath,
+      };
+    });
+  }
   if (!scholarshipId) return res.status(400).json({ success: false, message: 'scholarship_id is required.' });
   let connection;
   try {
@@ -961,14 +1056,14 @@ async function handleApplicationSubmission(req, res) {
     if (!scholarships.length) return res.status(400).json({ success: false, message: 'This scholarship is inactive or outside its application period.' });
     await ensureScholarshipDocuments(connection, scholarshipId);
     const [fields] = await connection.query('SELECT * FROM scholarship_form_fields WHERE scholarship_id = ? ORDER BY display_order, id', [scholarshipId]);
-    const uploadedFieldIds = new Set((req.files || []).map((file) => String(file.fieldname).replace(/^field_/, '')));
+    const uploadedFieldIds = new Set((req.files || []).map((file) => String(file.fieldname).replace(/^field_/, '').replace(/[^0-9]/g, '')));
     const validationValues = { ...values };
     fields.filter((field) => field.field_type === 'file').forEach((field) => {
       if (uploadedFieldIds.has(String(field.id))) validationValues[field.field_key] = true;
     });
     const errors = validateDynamicFields(fields, validationValues, status === 'submitted');
     const requiredDocuments = status === 'submitted' ? (await connection.query('SELECT * FROM scholarship_required_documents WHERE scholarship_id = ? AND required = 1', [scholarshipId]))[0] : [];
-    const uploadedDocumentIds = new Set((req.files || []).map((file) => String(file.fieldname).replace(/^document_/, '')));
+    const uploadedDocumentIds = new Set((req.files || []).map((file) => String(file.fieldname).replace(/^document_/, '').replace(/[^0-9]/g, '')));
     requiredDocuments.forEach((document) => { if (!uploadedDocumentIds.has(String(document.id))) errors[`document_${document.id}`] = `${document.document_name} is required.`; });
     if (Object.keys(errors).length) return res.status(422).json({ success: false, message: 'Please correct the highlighted fields.', errors });
     const [existing] = await connection.query('SELECT id, status FROM scholarship_applications WHERE scholarship_id = ? AND student_id = ?', [scholarshipId, studentId]);
@@ -1001,7 +1096,7 @@ async function handleApplicationSubmission(req, res) {
 }
 
 app.post('/api/applications', requireStudent, (req, res, next) => upload.any()(req, res, (error) => {
-  if (error) return res.status(400).json({ success: false, message: error.code === 'LIMIT_FILE_SIZE' ? 'Uploaded files must be within the size limit.' : 'Only PDF, JPG, and PNG files are allowed.' });
+  if (error) return res.status(400).json({ success: false, message: error.code === 'LIMIT_FILE_SIZE' ? 'Uploaded files must be within the size limit.' : 'Only PDF, TXT, JPG, and PNG files are allowed.' });
   return handleApplicationSubmission(req, res, next);
 }));
 
@@ -1026,6 +1121,144 @@ app.put('/api/applications/:id/verification-stages/:stageKey', async (req, res) 
     return res.json({ success: true, data: await calculateReadiness(req.params.id) });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Verification stage could not be saved.' });
+  }
+});
+
+app.post('/api/institution-applications/:applicationId/verify', async (req, res) => {
+  try {
+    const applicationId = Number(req.params.applicationId);
+    if (!applicationId) return res.status(400).json({ success: false, message: 'A valid application ID is required.' });
+
+    const record = await upsertApprovalRecord({
+      applicationId,
+      studentId: req.body.studentId,
+      studentName: req.body.studentName,
+      scholarshipId: req.body.scholarshipId,
+      scholarshipName: req.body.scholarshipName,
+      institutionName: req.body.institutionName || 'Institution verification',
+      institutionStatus: 'verified',
+      governmentStatus: 'pending',
+      status: 'pending_government_approval',
+    });
+
+    await pool.query(
+      'INSERT INTO application_verification_stages (application_id, stage_key, status, metadata_json) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), metadata_json = VALUES(metadata_json)',
+      [applicationId, 'institution_verification', 'verified', JSON.stringify({ verified_by: 'institution', verified_at: new Date().toISOString() })]
+    );
+
+    return res.json({ success: true, data: record });
+  } catch (error) {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_TABLE_ERROR') {
+      return res.status(503).json({ success: false, message: 'Approval workflow tables are not ready yet. Start the MySQL schema first.' });
+    }
+    if (error.code === 'APP_NOT_FOUND') {
+      return res.status(404).json({ success: false, message: 'Application not found.' });
+    }
+    return res.status(500).json({ success: false, message: 'Institution verification could not be saved.' });
+  }
+});
+
+app.get('/api/government/pending-approvals', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT
+        application_id AS id,
+        application_id,
+        student_id AS studentId,
+        student_name AS student,
+        scholarship_name AS scholarship,
+        institution_name AS institute,
+        status,
+        institution_status AS institutionStatus,
+        government_status AS governmentStatus,
+        created_at AS createdAt
+      FROM application_approvals
+      WHERE status IN ('pending_government_approval', 'institution_verified')
+      ORDER BY updated_at DESC
+    `);
+
+    return res.json({ success: true, data: rows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      applicationId: Number(row.application_id || row.id),
+      student: row.student || row.studentId || 'Student',
+      scholarship: row.scholarship || 'Pending scholarship review',
+      institute: row.institute || 'Institution verification complete',
+      status: row.status === 'pending_government_approval' ? 'Sent to government approval' : row.status
+    })) });
+  } catch (error) {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_TABLE_ERROR') {
+      return res.json({ success: true, data: [] });
+    }
+    return res.status(500).json({ success: false, message: 'Pending approvals could not be loaded.' });
+  }
+});
+
+app.post('/api/government-approvals/:applicationId/approve', async (req, res) => {
+  try {
+    const applicationId = Number(req.params.applicationId);
+    const [[application]] = await pool.query(`
+      SELECT sa.id, sa.student_id, sa.status,
+             s.name AS scholarship_name,
+             CONCAT(COALESCE(sp.first_name, ''), ' ', COALESCE(sp.last_name, '')) AS student_name
+      FROM scholarship_applications sa
+      LEFT JOIN scholarships s ON s.id = sa.scholarship_id
+      LEFT JOIN student_profiles sp ON sp.student_id = sa.student_id
+      WHERE sa.id = ?
+    `, [applicationId]);
+
+    if (!application) return res.status(404).json({ success: false, message: 'Application not found.' });
+
+    const studentId = application.student_id || req.body.studentId || 'STUDENT_UNKNOWN';
+    const studentName = req.body.studentName || application.student_name || studentId;
+    const scholarshipName = req.body.scholarshipName || application.scholarship_name || 'Scholarship application';
+
+    await pool.query(`
+      INSERT INTO application_approvals (application_id, student_id, student_name, scholarship_id, scholarship_name, institution_name, institution_status, government_status, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        student_id = VALUES(student_id),
+        student_name = VALUES(student_name),
+        scholarship_id = VALUES(scholarship_id),
+        scholarship_name = VALUES(scholarship_name),
+        institution_name = VALUES(institution_name),
+        institution_status = VALUES(institution_status),
+        government_status = VALUES(government_status),
+        status = VALUES(status),
+        updated_at = CURRENT_TIMESTAMP
+    `, [applicationId, studentId, studentName, application.scholarship_id || null, scholarshipName, 'Institution verification', 'verified', 'approved', 'approved']);
+
+    await pool.query(
+      'INSERT INTO application_verification_stages (application_id, stage_key, status, metadata_json) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), metadata_json = VALUES(metadata_json)',
+      [applicationId, 'government_approval', 'approved', JSON.stringify({ approved_by: 'government_officer', approved_at: new Date().toISOString() })]
+    );
+
+    await addStudentNotification(studentId, 'Scholarship approved', `Your application for ${scholarshipName} has been approved by the government officer.`, { applicationId, notificationType: 'scholarship_approval' });
+
+    return res.json({ success: true, data: { applicationId, studentId, studentName, scholarshipName, status: 'approved' } });
+  } catch (error) {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_TABLE_ERROR') {
+      return res.status(503).json({ success: false, message: 'Approval workflow tables are not ready yet. Start the MySQL schema first.' });
+    }
+    return res.status(500).json({ success: false, message: 'Government approval could not be saved.' });
+  }
+});
+
+app.get('/api/student/notifications/:studentId', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT id, title, message, notification_type, application_id, is_read, created_at
+      FROM student_notifications
+      WHERE student_id = ?
+      ORDER BY created_at DESC
+    `, [req.params.studentId]);
+
+    return res.json({ success: true, data: rows });
+  } catch (error) {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_TABLE_ERROR') {
+      return res.json({ success: true, data: [] });
+    }
+    return res.status(500).json({ success: false, message: 'Notifications could not be loaded.' });
   }
 });
 
@@ -1293,4 +1526,5 @@ initializeDatabase();
 
 app.listen(PORT, HOST, () => {
   console.log(`Scholarship server running on http://${HOST}:${PORT}`);
+  ensureAiService();
 });
