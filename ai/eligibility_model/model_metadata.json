@@ -1,0 +1,157 @@
+{
+  "dataset_rows": 50000,
+  "train_rows": 31980,
+  "test_rows": 18020,
+  "features": [
+    "education_qualification",
+    "gender",
+    "community",
+    "religion",
+    "exservice_men",
+    "disability",
+    "sports",
+    "annual_percentage",
+    "income",
+    "india"
+  ],
+  "excluded_features": [
+    "name",
+    "source_sheet"
+  ],
+  "models": [
+    {
+      "model": "knn",
+      "accuracy": 0.6087125416204218,
+      "eligible_precision": 0.7873793615441722,
+      "eligible_recall": 0.48553378502105843,
+      "eligible_f1": 0.6006682901965227,
+      "confusion_matrix": [
+        [
+          5666,
+          1432
+        ],
+        [
+          5619,
+          5303
+        ]
+      ],
+      "per_class": {
+        "0": {
+          "precision": 0.5020824102791316,
+          "recall": 0.7982530290222598,
+          "f1-score": 0.6164391013436327,
+          "support": 7098.0
+        },
+        "1": {
+          "precision": 0.7873793615441722,
+          "recall": 0.48553378502105843,
+          "f1-score": 0.6006682901965227,
+          "support": 10922.0
+        },
+        "accuracy": 0.6087125416204218,
+        "macro avg": {
+          "precision": 0.6447308859116518,
+          "recall": 0.6418934070216591,
+          "f1-score": 0.6085536957700777,
+          "support": 18020.0
+        },
+        "weighted avg": {
+          "precision": 0.675002127355534,
+          "recall": 0.6087125416204218,
+          "f1-score": 0.606880344443037,
+          "support": 18020.0
+        }
+      }
+    },
+    {
+      "model": "decision_tree",
+      "accuracy": 0.6804106548279689,
+      "eligible_precision": 0.7470571346540339,
+      "eligible_recall": 0.7147042666178356,
+      "eligible_f1": 0.730522670909176,
+      "confusion_matrix": [
+        [
+          4455,
+          2643
+        ],
+        [
+          3116,
+          7806
+        ]
+      ],
+      "per_class": {
+        "0": {
+          "precision": 0.5884295337471932,
+          "recall": 0.6276415891800508,
+          "f1-score": 0.6074033676460563,
+          "support": 7098.0
+        },
+        "1": {
+          "precision": 0.7470571346540339,
+          "recall": 0.7147042666178356,
+          "f1-score": 0.730522670909176,
+          "support": 10922.0
+        },
+        "accuracy": 0.6804106548279689,
+        "macro avg": {
+          "precision": 0.6677433342006136,
+          "recall": 0.6711729278989431,
+          "f1-score": 0.6689630192776161,
+          "support": 18020.0
+        },
+        "weighted avg": {
+          "precision": 0.6845744092801851,
+          "recall": 0.6804106548279689,
+          "f1-score": 0.6820265102786752,
+          "support": 18020.0
+        }
+      }
+    },
+    {
+      "model": "random_forest_balanced",
+      "accuracy": 0.7040510543840177,
+      "eligible_precision": 0.7504705566012368,
+      "eligible_recall": 0.7666178355612525,
+      "eligible_f1": 0.758458263508311,
+      "confusion_matrix": [
+        [
+          4314,
+          2784
+        ],
+        [
+          2549,
+          8373
+        ]
+      ],
+      "per_class": {
+        "0": {
+          "precision": 0.6285880810141338,
+          "recall": 0.6077768385460693,
+          "f1-score": 0.6180073060669007,
+          "support": 7098.0
+        },
+        "1": {
+          "precision": 0.7504705566012368,
+          "recall": 0.7666178355612525,
+          "f1-score": 0.758458263508311,
+          "support": 10922.0
+        },
+        "accuracy": 0.7040510543840177,
+        "macro avg": {
+          "precision": 0.6895293188076853,
+          "recall": 0.6871973370536609,
+          "f1-score": 0.6882327847876059,
+          "support": 18020.0
+        },
+        "weighted avg": {
+          "precision": 0.702461577038681,
+          "recall": 0.7040510543840177,
+          "f1-score": 0.7031352393174604,
+          "support": 18020.0
+        }
+      }
+    }
+  ],
+  "selected_model": "random_forest_balanced",
+  "selection_basis": "eligible-class F1, then eligible-class recall"
+}

@@ -18,6 +18,7 @@ ai/eligibility_model/*.joblib
 
 # Node dependencies
 frontend/node_modules/
+Backend/node_modules/
 
 # Build files
 frontend/build/
