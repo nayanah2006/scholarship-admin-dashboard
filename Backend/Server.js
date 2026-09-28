@@ -20,10 +20,22 @@ const origins = (process.env.CORS_ORIGIN || 'http://localhost:3000').split(',').
 app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin(origin, cb) { return !origin || origins.includes(origin) ? cb(null, true) : cb(new Error('CORS')); }, credentials: true }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 app.use(session({ secret: process.env.SESSION_SECRET || 'development-secret-change-me', resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 28800000 } }));
 const loginLimit = rateLimit({ windowMs: 900000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { success: false, message: 'Too many attempts. Try again later.' } });
 const fail = (res, status, message) => res.status(status).json({ success: false, message });
+const GENERIC_AUTH_FAIL = 'Invalid email or password.';
+const LOGIN_ROLES = new Set(['STUDENT', 'INSTITUTION', 'GOVERNMENT', 'ADMIN']);
+let dummyPasswordHashPromise;
+function dummyPasswordHash() {
+  if (!dummyPasswordHashPromise) dummyPasswordHashPromise = bcrypt.hash('invalid-login-placeholder', 12);
+  return dummyPasswordHashPromise;
+}
 const text = (v, max = 255) => String(v ?? '').trim().slice(0, max);
 const id = v => { const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; };
 const numeric = (v, min, max) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : null; };
@@ -39,7 +51,29 @@ async function initialize() { try { const conn = await pool.getConnection(); awa
 
 app.get('/api/health', async (_req, res) => { try { await pool.query('SELECT 1'); res.json({ success: true, data: { status: 'ok', database: 'connected', time: new Date().toISOString() } }); } catch (_) { fail(res, 503, 'Database is unavailable.'); } });
 app.post('/api/auth/register', loginLimit, async (req, res) => { const email = text(req.body.email).toLowerCase(), password = String(req.body.password || ''), fullName = text(req.body.fullName, 160), userRole = text(req.body.role).toUpperCase(); if (!validEmail(email) || !fullName || !['STUDENT', 'INSTITUTION'].includes(userRole)) return fail(res, 400, 'Provide a valid name, email, and supported role.'); if (password.length < 10 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) return fail(res, 400, 'Password must be at least 10 characters and include letters and numbers.'); if (userRole === 'INSTITUTION' && (!text(req.body.institutionName) || !text(req.body.institutionCode, 60))) return fail(res, 400, 'Institution name and code are required.'); let conn; try { const userId = randomUUID(), hash = await bcrypt.hash(password, 12); conn = await pool.getConnection(); await conn.beginTransaction(); await conn.query('INSERT INTO users (id,email,password_hash,role,full_name,phone) VALUES (?,?,?,?,?,?)', [userId, email, hash, userRole, fullName, text(req.body.phone, 25) || null]); if (userRole === 'STUDENT') await conn.query('INSERT INTO student_profiles_v2 (user_id) VALUES (?)', [userId]); else await conn.query('INSERT INTO institutions (id,user_id,name,code,state,address) VALUES (?,?,?,?,?,?)', [randomUUID(), userId, text(req.body.institutionName), text(req.body.institutionCode, 60), text(req.body.state,100)||null, text(req.body.address,1000)||null]); await conn.commit(); await audit(userId, 'REGISTER', 'user', userId); res.status(201).json({ success: true, data: { id: userId, email, role: userRole, fullName } }); } catch (e) { await conn?.rollback(); if (e.code === 'ER_DUP_ENTRY') return fail(res, 409, 'That email or institution code is already registered.'); fail(res, 500, 'Registration could not be completed.'); } finally { conn?.release(); } });
-app.post('/api/auth/login', loginLimit, async (req, res) => { try { const [rows] = await pool.query('SELECT u.*,i.id institution_id FROM users u LEFT JOIN institutions i ON i.user_id=u.id WHERE u.email=? LIMIT 1', [text(req.body.email).toLowerCase()]); const u = rows[0]; if (!u || !u.is_active || !(await bcrypt.compare(String(req.body.password || ''), u.password_hash))) return fail(res, 401, 'Invalid email or password.'); req.session.regenerate(err => { if (err) return fail(res, 500, 'Could not create a secure session.'); req.session.user = { id: u.id, role: u.role, fullName: u.full_name, institutionId: u.institution_id || null }; req.session.save(() => res.json({ success: true, data: req.session.user })); }); } catch (_) { fail(res, 500, 'Login could not be completed.'); } });
+app.post('/api/auth/login', loginLimit, async (req, res) => {
+  const email = text(req.body.email).toLowerCase();
+  const password = String(req.body.password || '');
+  const selectedRole = text(req.body.role).toUpperCase();
+  if (!email || !password || !selectedRole) return fail(res, 400, 'Email, password, and role are required.');
+  if (!validEmail(email) || !LOGIN_ROLES.has(selectedRole)) return fail(res, 401, GENERIC_AUTH_FAIL);
+  try {
+    const [rows] = await pool.query('SELECT u.*,i.id institution_id FROM users u LEFT JOIN institutions i ON i.user_id=u.id WHERE u.email=? LIMIT 1', [email]);
+    const u = rows[0];
+    const hash = u?.password_hash || await dummyPasswordHash();
+    const passwordOk = await bcrypt.compare(password, hash);
+    if (!u || !u.is_active || !u.password_hash || !passwordOk || u.role !== selectedRole) {
+      return fail(res, 401, GENERIC_AUTH_FAIL);
+    }
+    req.session.regenerate(err => {
+      if (err) return fail(res, 500, 'Could not create a secure session.');
+      req.session.user = { id: u.id, role: u.role, fullName: u.full_name, institutionId: u.institution_id || null };
+      req.session.save(() => res.json({ success: true, data: req.session.user }));
+    });
+  } catch (_) {
+    fail(res, 500, 'Login could not be completed.');
+  }
+});
 app.post('/api/auth/logout', requireAuth, (req, res) => req.session.destroy(() => res.clearCookie('connect.sid').json({ success: true })));
 app.get('/api/auth/me', requireAuth, (req, res) => res.json({ success: true, data: req.user }));
 
@@ -307,7 +341,7 @@ app.get('/api/applications/:id', requireAuth, async(req,res)=>{const application
         (SELECT v.remarks FROM document_verifications v WHERE v.document_id=d.id ORDER BY v.created_at DESC LIMIT 1) verification_remarks,
         (SELECT v.created_at FROM document_verifications v WHERE v.document_id=d.id ORDER BY v.created_at DESC LIMIT 1) verified_at
         FROM documents d WHERE d.application_id=? ORDER BY d.created_at`,[applicationId]);const [history]=await pool.query('SELECT h.*,u.full_name changed_by_name FROM application_status_history h LEFT JOIN users u ON u.id=h.changed_by WHERE h.application_id=? ORDER BY h.created_at',[applicationId]);const [[eligibility]]=await pool.query('SELECT eligible,explanation,evaluated_at FROM eligibility_evaluations WHERE student_id=? AND scholarship_id=? ORDER BY evaluated_at DESC LIMIT 1',[a.student_id,a.scholarship_id]);res.json({success:true,data:{...a,eligibility:eligibility||null,documents,history}});});
-app.post('/api/applications/:id/documents', requireAuth, role('STUDENT'), (req,res)=>upload.array('files')(req,res,async err=>{if(err)return fail(res,400,err.code==='LIMIT_FILE_SIZE'?'File exceeds size limit.':'Invalid upload.');const applicationId=id(req.params.id),a=await application(applicationId);if(!a||a.student_id!==req.user.id)return fail(res,404,'Application not found.');const documentType=text(req.body.documentType,100);if(!documentType||!req.files?.length)return fail(res,400,'Document type and at least one file are required.');try{const documentIds=[];for(const file of req.files){if(!magic(file))return fail(res,400,'The uploaded file content does not match its type.');const storageName=`${randomUUID()}${path.extname(file.originalname).toLowerCase()}`;fs.writeFileSync(path.join(uploadDir,storageName),file.buffer,{flag:'wx'});const [r]=await pool.query('INSERT INTO documents (student_id,application_id,document_type,original_name,storage_name,mime_type,file_size,status) VALUES (?,?,?,?,?,?,?,?)',[req.user.id,applicationId,documentType,path.basename(file.originalname),storageName,file.mimetype,file.size,'PENDING']);documentIds.push(r.insertId);}res.status(201).json({success:true,data:{documentIds}});}catch(_){fail(res,500,'Document upload failed.');}}));
+app.post('/api/applications/:id/documents', requireAuth, role('STUDENT'), (req,res)=>upload.array('files')(req,res,async err=>{if(err)return fail(res,400,err.code==='LIMIT_FILE_SIZE'?'File exceeds size limit.':'Invalid upload.');const applicationId=id(req.params.id),a=await application(applicationId);if(!a||a.student_id!==req.user.id)return fail(res,404,'Application not found.');const documentType=text(req.body.documentType,100);if(!documentType||!req.files?.length)return fail(res,400,'Document type and at least one file are required.');try{const documentIds=[];for(const file of req.files){if(!magic(file))return fail(res,400,'The uploaded file content does not match its type.');const storageName=`${randomUUID()}${path.extname(file.originalname).toLowerCase()}`;fs.writeFileSync(path.join(uploadDir,storageName),file.buffer,{flag:'wx'});const [r]=await pool.query('INSERT INTO documents (student_id,application_id,document_type,original_name,storage_name,mime_type,file_size,status) VALUES (?,?,?,?,?,?,?,?)',[req.user.id,applicationId,documentType,path.basename(file.originalname),storageName,file.mimetype,file.size,'PENDING']);documentIds.push(r.insertId);}emitApplicationEvent(pool,'DOCUMENT_UPLOADED',applicationId,{documentCount:documentIds.length,documentType});res.status(201).json({success:true,data:{documentIds}});}catch(_){fail(res,500,'Document upload failed.');}}));
 app.post('/api/applications/:id/submit', requireAuth, role('STUDENT'), async (req, res) => {
   const applicationId = id(req.params.id);
   const a = await application(applicationId);
@@ -328,6 +362,7 @@ app.post('/api/applications/:id/submit', requireAuth, role('STUDENT'), async (re
     await conn.query('INSERT INTO application_status_history (application_id,status,changed_by,remarks) VALUES (?,?,?,?)', [applicationId, 'INSTITUTION_VERIFICATION', req.user.id, 'Application submitted.']);
     await notify(req.user.id, 'APPLICATION_SUBMITTED', 'Application submitted', `Your ${a.scholarship_name} application (${a.public_id}) was submitted.`, applicationId, conn);
     await conn.commit();
+    emitApplicationEvent(pool, 'APPLICATION_SUBMITTED', applicationId, { publicId: a.public_id, newStatus: 'INSTITUTION_VERIFICATION' });
     res.json({ success: true });
   } catch (error) {
     await conn.rollback();
@@ -340,7 +375,7 @@ app.post('/api/applications/:id/submit', requireAuth, role('STUDENT'), async (re
 app.get('/api/documents/:id/download', requireAuth, async(req,res)=>{const documentId=id(req.params.id);const [[doc]]=await pool.query('SELECT d.*,a.institution_id FROM documents d LEFT JOIN applications a ON a.id=d.application_id WHERE d.id=?',[documentId]);if(!doc)return fail(res,404,'Document not found.');const allowed=req.user.role==='ADMIN'||req.user.role==='GOVERNMENT'||doc.student_id===req.user.id||(req.user.role==='INSTITUTION'&&doc.institution_id===req.user.institutionId);if(!allowed)return fail(res,403,'You are not authorized to access this document.');const filePath=path.join(uploadDir,doc.storage_name);if(!fs.existsSync(filePath))return fail(res,404,'The stored file is missing.');if(req.query.download==='1'){res.download(filePath,doc.original_name);return;}res.setHeader('Content-Type',doc.mime_type||'application/octet-stream');res.setHeader('Content-Disposition',`inline; filename="${String(doc.original_name||'document').replace(/["\\]/g,'')}"`);res.sendFile(filePath);});
 
 app.get('/api/institution/applications', requireAuth, role('INSTITUTION'), async(req,res)=>{const [items]=await pool.query("SELECT a.*,u.full_name student_name,u.email,s.name scholarship_name FROM applications a JOIN users u ON u.id=a.student_id JOIN scholarships s ON s.id=a.scholarship_id WHERE a.institution_id=? AND a.status IN ('INSTITUTION_VERIFICATION','DOCUMENT_VERIFICATION','CORRECTION_REQUIRED') ORDER BY a.updated_at",[req.user.institutionId]);res.json({success:true,data:items});});
-app.post('/api/institution/applications/:id/verify', requireAuth, role('INSTITUTION'), async(req,res)=>{const applicationId=id(req.params.id),a=await application(applicationId);if(!a||a.institution_id!==req.user.institutionId)return fail(res,404,'Application not found.');const decision=text(req.body.decision).toUpperCase(),remarks=text(req.body.remarks,1000);if(!['VERIFIED','REJECTED','CORRECTION_REQUIRED'].includes(decision))return fail(res,400,'Invalid verification decision.');const status=decision==='VERIFIED'?'DOCUMENT_VERIFICATION':decision;await pool.query('INSERT INTO institution_verifications (application_id,institution_id,verifier_id,decision,remarks) VALUES (?,?,?,?,?)',[applicationId,req.user.institutionId,req.user.id,decision,remarks||null]);await pool.query('UPDATE applications SET status=? WHERE id=?',[status,applicationId]);await pool.query('INSERT INTO application_status_history (application_id,status,changed_by,remarks) VALUES (?,?,?,?)',[applicationId,status,req.user.id,remarks||null]);await notify(a.student_id,'VERIFICATION',`Institution verification: ${decision}`,remarks||'Your application status was updated.');res.json({success:true});});
+app.post('/api/institution/applications/:id/verify', requireAuth, role('INSTITUTION'), async(req,res)=>{const applicationId=id(req.params.id),a=await application(applicationId);if(!a||a.institution_id!==req.user.institutionId)return fail(res,404,'Application not found.');const decision=text(req.body.decision).toUpperCase(),remarks=text(req.body.remarks,1000);if(!['VERIFIED','REJECTED','CORRECTION_REQUIRED'].includes(decision))return fail(res,400,'Invalid verification decision.');const status=decision==='VERIFIED'?'DOCUMENT_VERIFICATION':decision;await pool.query('INSERT INTO institution_verifications (application_id,institution_id,verifier_id,decision,remarks) VALUES (?,?,?,?,?)',[applicationId,req.user.institutionId,req.user.id,decision,remarks||null]);await pool.query('UPDATE applications SET status=? WHERE id=?',[status,applicationId]);await pool.query('INSERT INTO application_status_history (application_id,status,changed_by,remarks) VALUES (?,?,?,?)',[applicationId,status,req.user.id,remarks||null]);await notify(a.student_id,'VERIFICATION',`Institution verification: ${decision}`,remarks||'Your application status was updated.');emitApplicationEvent(pool,decision==='REJECTED'?'APPLICATION_REJECTED':'APPLICATION_VERIFIED',applicationId,{previousStatus:a.status,newStatus:status,decision});res.json({success:true});});
 app.post('/api/institution/documents/:id/verify', requireAuth, role('INSTITUTION'), async(req,res)=>{const documentId=id(req.params.id);const [[doc]]=await pool.query('SELECT d.*,a.institution_id FROM documents d JOIN applications a ON a.id=d.application_id WHERE d.id=?',[documentId]);if(!doc||doc.institution_id!==req.user.institutionId)return fail(res,404,'Document not found.');const decision=text(req.body.decision).toUpperCase();if(!['VERIFIED','REJECTED','REUPLOAD_REQUIRED'].includes(decision))return fail(res,400,'Invalid document decision.');await pool.query('UPDATE documents SET status=? WHERE id=?',[decision,documentId]);await pool.query('INSERT INTO document_verifications (document_id,verifier_id,decision,remarks) VALUES (?,?,?,?)',[documentId,req.user.id,decision,text(req.body.remarks,1000)||null]);res.json({success:true});});
 
 // ------------------------------------------------------------------
@@ -426,6 +461,7 @@ app.post('/api/government/applications/:id/decision', requireAuth, role('GOVERNM
     await conn.query('INSERT INTO application_status_history (application_id,status,changed_by,remarks) VALUES (?,?,?,?)', [applicationId, decision, req.user.id, remarks || null]);
     await notify(a.student_id, 'GOVERNMENT_DECISION', `Government review: ${decision}`, remarks || `Your ${a.scholarship_name} application (${a.public_id}) received a final ${decision} decision.`, applicationId, conn);
     await conn.commit();
+    emitApplicationEvent(pool, decision === 'REJECTED' ? 'APPLICATION_REJECTED' : 'APPLICATION_STATUS_CHANGED', applicationId, { previousStatus: a.status, newStatus: decision, publicId: a.public_id });
     res.json({ success: true });
   } catch (error) { await conn.rollback(); fail(res, 500, 'Decision could not be saved.'); } finally { conn.release(); }
 });
@@ -474,6 +510,65 @@ app.patch('/api/admin/users/:id/status', requireAuth, role('ADMIN'), async(req,r
 app.post('/api/admin/scholarships', requireAuth, role('ADMIN'), async(req,res)=>{const b=req.body, amount=numeric(b.amount,0,100000000);if(!text(b.name)||!text(b.description)||!text(b.provider)||!text(b.type)||!text(b.startDate,10)||!text(b.endDate,10)||amount===null||new Date(b.startDate)>new Date(b.endDate))return fail(res,400,'Complete valid scholarship details.');const [r]=await pool.query('INSERT INTO scholarships (name,description,provider,scholarship_type,amount,category,eligible_course,district_name,start_date,end_date,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)',[text(b.name,200),text(b.description,10000),text(b.provider,200),text(b.type,100),amount,text(b.category,100)||null,text(b.course,200)||null,text(b.state,100)||null,b.startDate,b.endDate,b.status==='inactive'?'inactive':'active']);await audit(req.user.id,'CREATE','scholarship',r.insertId);res.status(201).json({success:true,data:{id:r.insertId}});});
 app.get('/api/notifications', requireAuth, async(req,res)=>{const [items]=await pool.query('SELECT n.*,a.public_id application_public_id,s.name scholarship_name FROM notifications n LEFT JOIN applications a ON a.id=n.application_id LEFT JOIN scholarships s ON s.id=a.scholarship_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT 50',[req.user.id]);res.json({success:true,data:items});});
 app.patch('/api/notifications/:id/read', requireAuth, async(req,res)=>{await pool.query('UPDATE notifications SET is_read=TRUE WHERE id=? AND user_id=?',[id(req.params.id),req.user.id]);res.json({success:true});});
+// ------------------------------------------------------------------
+// External service integrations (OAuth, webhooks, chatbot)
+// ------------------------------------------------------------------
+const { getAnswer, getOrCreateSession, loadHistory, saveMessage, loadStudentContext } = require('./chatbotService');
+const { emitApplicationEvent } = require('./webhookService');
+const oauthRoutes = require('./routes/oauth');
+const webhookRoutes = require('./routes/webhooks');
+const officerAnalyticsRoutes = require('./routes/officerAnalytics');
+oauthRoutes.registerRoutes(app, pool, fail);
+webhookRoutes.registerRoutes(app, pool, fail);
+officerAnalyticsRoutes.registerRoutes(app, pool, fail, requireAuth, role);
+
+app.get('/api/ai/chat/history', requireAuth, async (req, res) => {
+  try {
+    const sessionId = await getOrCreateSession(pool, req.user);
+    const history = await loadHistory(pool, sessionId, 40);
+    res.json({
+      success: true,
+      data: {
+        sessionId,
+        messages: history.map((m) => ({
+          role: m.role === 'user' ? 'user' : 'bot',
+          content: m.content,
+          sources: Array.isArray(m.sources)
+            ? m.sources
+            : (typeof m.sources === 'string' ? JSON.parse(m.sources || '[]') : [])
+        }))
+      }
+    });
+  } catch (err) {
+    console.error('Chat history error:', err.message);
+    fail(res, 500, 'Chat history could not be loaded.');
+  }
+});
+
+// Chatbot endpoint — rule-based, grounded in the portal database, with per-user memory.
+app.post('/api/ai/chat', requireAuth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      return fail(res, 400, 'Please enter a question about scholarships.');
+    }
+    if (message.trim().length > 2000) {
+      return fail(res, 400, 'Message is too long. Please ask a shorter question.');
+    }
+    const sessionId = await getOrCreateSession(pool, req.user);
+    const history = await loadHistory(pool, sessionId);
+    const studentContext = await loadStudentContext(pool, req.user);
+    const result = await getAnswer(pool, message.trim(), req.user, { history, studentContext });
+    await saveMessage(pool, sessionId, 'user', message.trim(), null);
+    await saveMessage(pool, sessionId, 'assistant', result.answer, result.sources);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('Chatbot error:', err.message);
+    fail(res, 500, 'The chatbot could not process your question.');
+  }
+});
+
 app.use((err,_req,res,_next)=>{if(err.message==='CORS')return fail(res,403,'Origin is not allowed.');console.error('Unexpected API error:',err.message);return fail(res,500,'Unexpected server error.');});
 app.use((_req,res)=>fail(res,404,'Route not found.'));
+
 initialize().finally(()=>app.listen(PORT,()=>console.log(`Scholarship API listening on ${PORT}`)));

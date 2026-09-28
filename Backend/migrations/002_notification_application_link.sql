@@ -2,12 +2,20 @@ SET @notification_application_column_exists := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND COLUMN_NAME = 'application_id'
 );
+SET @notification_application_is_bigint := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notifications' AND COLUMN_NAME = 'application_id' AND DATA_TYPE = 'bigint'
+);
 SET @add_notification_application_column := IF(
   @notification_application_column_exists = 0,
   'ALTER TABLE notifications ADD COLUMN application_id BIGINT NULL',
-  'SELECT 1'
+  IF(
+    @notification_application_is_bigint = 0,
+    'ALTER TABLE notifications MODIFY COLUMN application_id BIGINT NULL',
+    'SELECT 1'
+  )
 );
-PREPARE add_notification_application_column FROM @add_notification_application;
+PREPARE add_notification_application_column FROM @add_notification_application_column;
 EXECUTE add_notification_application_column;
 DEALLOCATE PREPARE add_notification_application_column;
 
