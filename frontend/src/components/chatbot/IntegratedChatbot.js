@@ -60,6 +60,7 @@ export function IntegratedChatbot({ user, api }) {
             role: m.role === 'user' ? 'user' : 'bot',
             content: m.content,
             sources: m.sources || [],
+            options: m.options || [],
             time: ''
           }))
         );
@@ -91,6 +92,7 @@ export function IntegratedChatbot({ user, api }) {
         role: 'bot',
         content: response.answer || response.message || 'I have answered your inquiry based on official scholarship records.',
         sources: response.sources || [],
+        options: response.options || [],
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
@@ -177,6 +179,21 @@ export function IntegratedChatbot({ user, api }) {
                     : 'bg-white text-slate-800 border border-slate-200/80 rounded-bl-none'
                 }`}>
                   <p className="whitespace-pre-line leading-relaxed">{m.content}</p>
+
+                  {m.options?.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {m.options.map((option) => (
+                        <button
+                          key={option.id}
+                          onClick={() => handleSend(`What documents are mandatory for ${option.name}?`)}
+                          disabled={loading}
+                          className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-left font-medium text-indigo-800 hover:border-indigo-400 hover:bg-indigo-100 disabled:opacity-50"
+                        >
+                          {option.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Sources if present */}
                   {m.sources && m.sources.length > 0 && (

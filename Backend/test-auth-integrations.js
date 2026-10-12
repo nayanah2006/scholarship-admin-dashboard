@@ -191,7 +191,65 @@ async function run() {
     headers: { Cookie: studentCookie },
     body: JSON.stringify({ message: 'What documents are required?' })
   });
-  assert(followUp.res.status === 200 && typeof followUp.body.data?.answer === 'string', 'Follow-up chatbot question uses the same session');
+  assert(
+    followUp.res.status === 200 &&
+      followUp.body.data?.answer?.toLowerCase().includes('which scholarship') &&
+      Array.isArray(followUp.body.data?.options) &&
+      followUp.body.data.options.length > 0,
+    'Ambiguous document question asks which scholarship and offers choices'
+  );
+
+  const selectedScholarship = followUp.body.data?.options?.[0];
+  const selectedDocuments = selectedScholarship
+    ? await request('/api/ai/chat', {
+        method: 'POST',
+        headers: { Cookie: studentCookie },
+        body: JSON.stringify({ message: `What documents are mandatory for ${selectedScholarship.name}?` })
+      })
+    : null;
+  assert(
+    selectedDocuments?.res.status === 200 &&
+      selectedDocuments.body.data?.answer?.includes(selectedScholarship.name) &&
+      !selectedDocuments.body.data?.options?.length &&
+      (
+        selectedDocuments.body.data?.answer?.includes('same checklist for most active scholarships') ||
+        (selectedDocuments.body.data?.sources || []).every((source) => (
+          source.scholarship === selectedScholarship.name ||
+          source.name === selectedScholarship.name
+        ))
+      ),
+    'Selected scholarship gets its document list or an explicit shared-data warning'
+  );
+
+  const shortNameDocuments = await request('/api/ai/chat', {
+    method: 'POST',
+    headers: { Cookie: studentCookie },
+    body: JSON.stringify({ message: 'What documents are mandatory for ssp?' })
+  });
+  assert(
+    shortNameDocuments.res.status === 200 &&
+      shortNameDocuments.body.data?.answer?.toLowerCase().includes('ssp') &&
+      !shortNameDocuments.body.data?.options?.length,
+    'Short scholarship names resolve without reopening the chooser'
+  );
+
+  const historyAfterSelection = await request('/api/ai/chat/history', { headers: { Cookie: studentCookie } });
+  const storedChat = historyAfterSelection.body.data?.messages || [];
+  const hasUnrequestedDocumentAnswer = storedChat.some((message, index) => (
+    message.role === 'bot' &&
+    message.sources?.some((source) =>
+      source.scholarship &&
+      !String(storedChat.slice(0, index).reverse().find((item) => item.role === 'user')?.content || '')
+        .toLowerCase()
+        .includes(String(source.scholarship).toLowerCase())
+    )
+  ));
+  assert(
+    historyAfterSelection.res.status === 200 &&
+      storedChat.some((message) => message.options?.length > 0) &&
+      !hasUnrequestedDocumentAnswer,
+    'Scholarship choices remain selectable after chat history is reloaded'
+  );
 
   console.log('\n====================================================');
   console.log(`TEST SUMMARY: ${results.passed} / ${results.total} PASSED (${results.failed} FAILED)`);

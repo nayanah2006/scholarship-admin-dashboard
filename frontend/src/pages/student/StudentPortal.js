@@ -33,6 +33,16 @@ import {
 } from '../../components/ui/DesignSystem';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const PROFILE_COMPLETION_FIELDS = ['fullName', 'phone', 'dateOfBirth', 'gender', 'community', 'annualIncome', 'state', 'institutionName', 'qualification', 'course', 'percentage', 'graduationYear'];
+
+function isProfileFieldComplete(profile, field) {
+  const value = profile?.[field];
+  if (value == null || String(value).trim() === '') return false;
+  if (field === 'annualIncome') return Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100000000;
+  if (field === 'percentage') return Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100;
+  if (field === 'graduationYear') return Number.isInteger(Number(value)) && Number(value) >= 1900 && Number(value) <= 2200;
+  return true;
+}
 
 export function StudentPortal({ user, api, done, fail, onPage, activeTab = 'dashboard' }) {
   // Tabs: 'dashboard' | 'scholarships' | 'profile' | 'applications' | 'saved' | 'recommendations' | 'eligibility'
@@ -216,9 +226,139 @@ export function StudentPortal({ user, api, done, fail, onPage, activeTab = 'dash
     return <LoadingState message="Loading your student profile and scholarships…" />;
   }
 
-  const profilePercent = profile?.profileCompletion || 0;
+  const profilePercent = Math.round(
+    (PROFILE_COMPLETION_FIELDS.filter((field) => isProfileFieldComplete(profile, field)).length /
+      PROFILE_COMPLETION_FIELDS.length) * 100
+  );
   const activeApps = applications.filter((a) => !['APPROVED', 'REJECTED'].includes(a.status));
   const approvedApps = applications.filter((a) => a.status === 'APPROVED');
+  const applicationsSection = (
+    <Card
+      title="My Applications"
+      subtitle="Track document verification, institution approvals, and government review stages"
+    >
+      {applications.length > 0 ? (
+        <div className="space-y-3">
+          {applications.map((app) => (
+            <div
+              key={app.id}
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 hover:border-slate-300 transition-colors shadow-sm"
+            >
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-bold text-slate-900">{app.public_id}</span>
+                  <StatusBadge status={app.status} />
+                </div>
+                <h4 className="mt-1 font-bold text-sm text-slate-800">{app.scholarship_name}</h4>
+                <p className="text-xs text-slate-500">
+                  {app.provider} • Grant: <b>{money(app.amount)}</b>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={async () => {
+                    try {
+                      const details = await api(`/api/applications/${app.id}`);
+                      setSelectedApp(details);
+                    } catch (err) {
+                      fail(err.message || 'Application details could not be loaded.');
+                    }
+                  }}
+                  variant="outline"
+                  size="sm"
+                  icon={Eye}
+                >
+                  Track Timeline
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          icon={FileText}
+          title="No scholarship applications yet"
+          message="Discover open scholarships and submit your application with documents."
+          action={
+            <Button onClick={() => onPage('scholarships')} variant="primary" size="sm">
+              Browse Scholarships
+            </Button>
+          }
+        />
+      )}
+    </Card>
+  );
+  const recommendationSection = (
+    <Card
+      title="Recommended Scholarships for You"
+      subtitle="Rule-based matches based on your education qualification, community, and annual income"
+      action={
+        <Button onClick={() => onPage('scholarships')} variant="ghost" size="sm" icon={ArrowRight}>
+          View All Catalog
+        </Button>
+      }
+    >
+      {recommendations.length > 0 ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {recommendations.slice(0, 3).map((rec) => {
+            const s = rec.scholarship;
+            return (
+              <div
+                key={s.id}
+                className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 uppercase">
+                      {s.scholarship_type || 'Merit'}
+                    </span>
+                    <span className="font-extrabold text-sm text-indigo-700">{money(s.amount)}</span>
+                  </div>
+                  <h3 className="mt-2 font-bold text-sm text-slate-900 leading-snug line-clamp-2">{s.name}</h3>
+                  <p className="mt-0.5 text-xs text-slate-500 line-clamp-1">{s.provider}</p>
+
+                  <div className="mt-3 space-y-1 rounded-lg bg-emerald-50/60 p-2.5 border border-emerald-100 text-[11px] text-emerald-900">
+                    <p className="font-bold flex items-center gap-1">
+                      <CheckCircle2 size={12} className="text-emerald-600" /> Match Criteria:
+                    </p>
+                    {rec.reasons.map((reason, index) => (
+                      <p key={index} className="text-emerald-800 leading-tight">• {reason}</p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
+                  <span className="text-[11px] text-slate-500">
+                    Deadline: <b>{String(s.end_date || '').slice(0, 10)}</b>
+                  </span>
+                  <div className="flex gap-1.5">
+                    <Button onClick={() => handleSaveScholarship(s.id)} variant="outline" size="sm">
+                      <Bookmark size={13} />
+                    </Button>
+                    <Button onClick={() => startApply(s)} variant="primary" size="sm">
+                      Apply
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState
+          icon={GraduationCap}
+          title="No recommendations generated yet"
+          message="Complete more of your student profile to unlock personalized scholarship recommendations."
+          action={
+            <Button onClick={() => onPage('profile')} variant="primary" size="sm">
+              Complete Profile
+            </Button>
+          }
+        />
+      )}
+    </Card>
+  );
 
   return (
     <div className="space-y-6">
@@ -286,130 +426,17 @@ export function StudentPortal({ user, api, done, fail, onPage, activeTab = 'dash
             />
           </div>
 
-          {/* Recommended Scholarships Section (Part 3) */}
-          <Card
-            title="Recommended Scholarships for You"
-            subtitle="Rule-based matches based on your education qualification, community, and annual income"
-            action={
-              <Button onClick={() => onPage('scholarships')} variant="ghost" size="sm" icon={ArrowRight}>
-                View All Catalog
-              </Button>
-            }
-          >
-            {recommendations.length > 0 ? (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {recommendations.slice(0, 3).map((rec) => {
-                  const s = rec.scholarship;
-                  return (
-                    <div
-                      key={s.id}
-                      className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all"
-                    >
-                      <div>
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 uppercase">
-                            {s.scholarship_type || 'Merit'}
-                          </span>
-                          <span className="font-extrabold text-sm text-indigo-700">{money(s.amount)}</span>
-                        </div>
-                        <h3 className="mt-2 font-bold text-sm text-slate-900 leading-snug line-clamp-2">{s.name}</h3>
-                        <p className="mt-0.5 text-xs text-slate-500 line-clamp-1">{s.provider}</p>
+          {recommendationSection}
 
-                        <div className="mt-3 space-y-1 rounded-lg bg-emerald-50/60 p-2.5 border border-emerald-100 text-[11px] text-emerald-900">
-                          <p className="font-bold flex items-center gap-1">
-                            <CheckCircle2 size={12} className="text-emerald-600" /> Match Criteria:
-                          </p>
-                          {rec.reasons.map((r, i) => (
-                            <p key={i} className="text-emerald-800 leading-tight">• {r}</p>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
-                        <span className="text-[11px] text-slate-500">
-                          Deadline: <b>{String(s.end_date || '').slice(0, 10)}</b>
-                        </span>
-                        <div className="flex gap-1.5">
-                          <Button onClick={() => handleSaveScholarship(s.id)} variant="outline" size="sm">
-                            <Bookmark size={13} />
-                          </Button>
-                          <Button onClick={() => startApply(s)} variant="primary" size="sm">
-                            Apply
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <EmptyState
-                icon={GraduationCap}
-                title="No recommendations generated yet"
-                message="Complete more of your student profile to unlock personalized scholarship recommendations."
-                action={
-                  <Button onClick={() => onPage('profile')} variant="primary" size="sm">
-                    Complete Profile
-                  </Button>
-                }
-              />
-            )}
-          </Card>
-
-          {/* Active Applications Tracker (Part 3) */}
-          <Card
-            title="My Active Applications"
-            subtitle="Track document verification, institution approvals, and government review stages"
-          >
-            {applications.length > 0 ? (
-              <div className="space-y-3">
-                {applications.map((app) => (
-                  <div
-                    key={app.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 hover:border-slate-300 transition-colors shadow-sm"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-slate-900">{app.public_id}</span>
-                        <StatusBadge status={app.status} />
-                      </div>
-                      <h4 className="mt-1 font-bold text-sm text-slate-800">{app.scholarship_name}</h4>
-                      <p className="text-xs text-slate-500">
-                        {app.provider} • Grant: <b>{money(app.amount)}</b>
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Button
-                        onClick={async () => {
-                          const details = await api(`/api/applications/${app.id}`);
-                          setSelectedApp(details);
-                        }}
-                        variant="outline"
-                        size="sm"
-                        icon={Eye}
-                      >
-                        Track Timeline
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState
-                icon={FileText}
-                title="No scholarship applications yet"
-                message="Discover open scholarships and submit your application with documents."
-                action={
-                  <Button onClick={() => onPage('scholarships')} variant="primary" size="sm">
-                    Browse Scholarships
-                  </Button>
-                }
-              />
-            )}
-          </Card>
+          {applicationsSection}
         </>
       )}
+
+      {/* Tab: Scholarship Recommendations */}
+      {activeTab === 'recommendations' && recommendationSection}
+
+      {/* Tab: Student Applications */}
+      {activeTab === 'applications' && applicationsSection}
 
       {/* Tab: Scholarships Catalog */}
       {activeTab === 'scholarships' && (
@@ -538,7 +565,7 @@ export function StudentPortal({ user, api, done, fail, onPage, activeTab = 'dash
               <InputField
                 label="State"
                 name="state"
-                value={profile?.state || 'Karnataka'}
+                value={profile?.state || ''}
                 onChange={(e) => setProfile({ ...profile, state: e.target.value })}
               />
               <InputField
@@ -574,7 +601,7 @@ export function StudentPortal({ user, api, done, fail, onPage, activeTab = 'dash
                 label="Graduation Year"
                 type="number"
                 name="graduationYear"
-                value={profile?.graduationYear || '2026'}
+                value={profile?.graduationYear || ''}
                 onChange={(e) => setProfile({ ...profile, graduationYear: e.target.value })}
               />
             </div>

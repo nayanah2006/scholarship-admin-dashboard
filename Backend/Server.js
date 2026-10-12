@@ -39,6 +39,11 @@ function dummyPasswordHash() {
 const text = (v, max = 255) => String(v ?? '').trim().slice(0, max);
 const id = v => { const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; };
 const numeric = (v, min, max) => { const n = Number(v); return Number.isFinite(n) && n >= min && n <= max ? n : null; };
+const PROFILE_COMPLETION_FIELDS = ['fullName', 'phone', 'dateOfBirth', 'gender', 'community', 'annualIncome', 'state', 'institutionName', 'qualification', 'course', 'percentage', 'graduationYear'];
+function profileCompletion(profile) {
+  const completed = PROFILE_COMPLETION_FIELDS.filter(field => profile[field] != null && String(profile[field]).trim() !== '').length;
+  return Math.round((completed / PROFILE_COMPLETION_FIELDS.length) * 100);
+}
 const validEmail = email => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 function requireAuth(req, res, next) { if (!req.session.user) return fail(res, 401, 'Please sign in to continue.'); req.user = req.session.user; return next(); }
 const role = (...roles) => (req, res, next) => roles.includes(req.user?.role) ? next() : fail(res, 403, 'You are not authorized to perform this action.');
@@ -88,7 +93,7 @@ app.get('/api/profile', requireAuth, role('STUDENT'), async (req, res) => {
       FROM users u JOIN student_profiles_v2 p ON p.user_id=u.id
       LEFT JOIN education e ON e.student_id=u.id AND e.is_current=1
       WHERE u.id=?`, [req.user.id]);
-    res.json({ success: true, data: p || {} });
+    res.json({ success: true, data: p ? { ...p, profileCompletion: profileCompletion(p) } : {} });
   } catch (error) {
     console.error('Profile load failed', { userId: req.user.id, error: error.message });
     fail(res, 500, 'Profile could not be loaded.');
@@ -113,6 +118,17 @@ app.put('/api/profile', requireAuth, role('STUDENT'), async (req, res) => {
   }
 
   const fields = req.body;
+  const completion = profileCompletion({
+    ...fields,
+    fullName: text(fields.fullName, 160),
+    phone: text(fields.phone, 25),
+    annualIncome: income,
+    percentage: marks,
+    institutionName: text(fields.institutionName, 255),
+    qualification: text(fields.qualification, 150),
+    course: text(fields.course, 200),
+    graduationYear: numeric(fields.graduationYear, 1900, 2200)
+  });
   const conn = await pool.getConnection();
 
   try {
@@ -159,7 +175,7 @@ app.put('/api/profile', requireAuth, role('STUDENT'), async (req, res) => {
          institution_id,
          profile_completion
        )
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,80)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON DUPLICATE KEY UPDATE
          date_of_birth=VALUES(date_of_birth),
          gender=VALUES(gender),
@@ -172,7 +188,7 @@ app.put('/api/profile', requireAuth, role('STUDENT'), async (req, res) => {
          ex_servicemen=VALUES(ex_servicemen),
          state=VALUES(state),
          institution_id=VALUES(institution_id),
-         profile_completion=80`,
+         profile_completion=VALUES(profile_completion)`,
       [
         req.user.id,
         text(fields.dateOfBirth, 10) || null,
@@ -185,7 +201,8 @@ app.put('/api/profile', requireAuth, role('STUDENT'), async (req, res) => {
         Boolean(fields.sports),
         Boolean(fields.exServicemen),
         text(fields.state, 100) || null,
-        institutionId
+        institutionId,
+        completion
       ]
     );
 
@@ -519,24 +536,42 @@ const oauthRoutes = require('./routes/oauth');
 const webhookRoutes = require('./routes/webhooks');
 const officerAnalyticsRoutes = require('./routes/officerAnalytics');
 oauthRoutes.registerRoutes(app, pool, fail);
-webhookRoutes.registerRoutes(app, pool, fail);
+webhookRoutes.registerRoutes(app, pool, fail, requireAuth, role);
 officerAnalyticsRoutes.registerRoutes(app, pool, fail, requireAuth, role);
 
 app.get('/api/ai/chat/history', requireAuth, async (req, res) => {
   try {
     const sessionId = await getOrCreateSession(pool, req.user);
     const history = await loadHistory(pool, sessionId, 40);
+    const messages = history.flatMap((message, index) => {
+      const stored = typeof message.sources === 'string'
+        ? JSON.parse(message.sources || '[]')
+        : message.sources;
+      const sources = Array.isArray(stored) ? stored : (Array.isArray(stored?.sources) ? stored.sources : []);
+      const previousUserMessage = history.slice(0, index).reverse().find((item) => item.role === 'user')?.content || '';
+      const citesUnaskedScholarship = message.role === 'assistant' &&
+        sources.some((source) =>
+          source.scholarship &&
+          !String(previousUserMessage).toLowerCase().includes(String(source.scholarship).toLowerCase())
+        );
+      if (citesUnaskedScholarship) return [];
+      const isLegacyDocumentAnswer = message.role === 'assistant' &&
+        String(message.content).includes('portal lists these documents') &&
+        sources.some((source) => source.scholarship && source.document_name);
+      return [{
+        role: message.role === 'user' ? 'user' : 'bot',
+        content: isLegacyDocumentAnswer
+          ? 'I cannot confirm that earlier document checklist was specific to this scholarship. Please ask again so I can check the current scheme-specific records.'
+          : message.content,
+        sources: isLegacyDocumentAnswer ? [] : sources,
+        options: Array.isArray(stored?.options) ? stored.options : []
+      }];
+    });
     res.json({
       success: true,
       data: {
         sessionId,
-        messages: history.map((m) => ({
-          role: m.role === 'user' ? 'user' : 'bot',
-          content: m.content,
-          sources: Array.isArray(m.sources)
-            ? m.sources
-            : (typeof m.sources === 'string' ? JSON.parse(m.sources || '[]') : [])
-        }))
+        messages
       }
     });
   } catch (err) {
@@ -560,7 +595,10 @@ app.post('/api/ai/chat', requireAuth, async (req, res) => {
     const studentContext = await loadStudentContext(pool, req.user);
     const result = await getAnswer(pool, message.trim(), req.user, { history, studentContext });
     await saveMessage(pool, sessionId, 'user', message.trim(), null);
-    await saveMessage(pool, sessionId, 'assistant', result.answer, result.sources);
+    await saveMessage(pool, sessionId, 'assistant', result.answer, {
+      sources: result.sources,
+      options: result.options || []
+    });
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('Chatbot error:', err.message);

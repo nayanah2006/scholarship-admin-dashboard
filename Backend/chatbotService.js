@@ -76,22 +76,46 @@ async function saveMessage(pool, sessionId, role, content, sources = null) {
   );
 }
 
-function conversationText(history) {
-  return (history || []).map((m) => `${m.role}: ${m.content}`).join('\n').toLowerCase();
-}
-
 function findMentionedScholarship(text, scholarships) {
   const haystack = String(text || '').toLowerCase();
   let best = null;
   let bestLen = 0;
   for (const s of scholarships) {
     const name = String(s.name || '').toLowerCase();
-    if (name.length >= 4 && haystack.includes(name) && name.length > bestLen) {
+    const mentioned = name.length >= 4
+      ? haystack.includes(name)
+      : new RegExp(`(^|[^a-z0-9])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z0-9])`, 'i').test(haystack);
+    if (name.length > 0 && mentioned && name.length > bestLen) {
       best = s;
       bestLen = name.length;
     }
   }
   return best;
+}
+
+async function hasCatalogWideDocumentTemplate(pool, scholarshipId, documentCount, activeScholarshipCount) {
+  if (!activeScholarshipCount || !documentCount) return false;
+  const [[result]] = await pool.query(
+    `SELECT COUNT(*) AS shared_count
+     FROM scholarships s
+     WHERE s.status='active' AND s.end_date>=CURDATE()
+       AND (SELECT COUNT(*) FROM scholarship_required_documents candidate
+            WHERE candidate.scholarship_id=s.id)=?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM scholarship_required_documents requested
+         WHERE requested.scholarship_id=?
+           AND NOT EXISTS (
+             SELECT 1
+             FROM scholarship_required_documents candidate
+             WHERE candidate.scholarship_id=s.id
+               AND candidate.document_name=requested.document_name
+               AND candidate.required=requested.required
+           )
+       )`,
+    [documentCount, scholarshipId]
+  );
+  return Number(result.shared_count) / activeScholarshipCount >= 0.8;
 }
 
 function personalizedPrefix(user, profile) {
@@ -107,9 +131,7 @@ async function getAnswer(pool, message, user, options = {}) {
 
   const scholarships = await loadScholarships(pool);
   const { profile, applications } = options.studentContext || await loadStudentContext(pool, user);
-  const history = options.history || [];
-  const historyBlob = `${conversationText(history)}\n${msgLower}`;
-  const mentioned = findMentionedScholarship(historyBlob, scholarships);
+  const mentioned = findMentionedScholarship(msg, scholarships);
   const greet = personalizedPrefix(user, profile);
 
   if (msgLower.includes('available') || msgLower.includes('what scholarships') || msgLower.includes('open scholarship') || msgLower.includes('can i apply')) {
@@ -148,24 +170,38 @@ async function getAnswer(pool, message, user, options = {}) {
   }
 
   if (msgLower.includes('document') || msgLower.includes('what do i need') || msgLower.includes('required paper')) {
-    if (mentioned) {
-      const [docs] = await pool.query(
-        'SELECT document_name, required FROM scholarship_required_documents WHERE scholarship_id=? ORDER BY required DESC, document_name',
-        [mentioned.id]
-      );
-      if (docs.length) {
-        const list = docs.map((d) => `${d.document_name}${d.required ? ' (required)' : ''}`).join(', ');
-        return {
-          answer: truncate(`${greet}for ${mentioned.name}, the portal lists these documents: ${list}.`),
-          sources: docs.map((d) => ({ document_name: d.document_name, scholarship: mentioned.name }))
-        };
+    if (!mentioned) {
+      const options = scholarships.slice(0, 8).map(({ id, name }) => ({ id, name }));
+      if (!options.length) {
+        return { answer: 'I could not find any open scholarships in the portal. Please check back later or contact your scholarship office.', sources: [] };
       }
+      return {
+        answer: `${greet}which scholarship are you asking about? Choose one below and I will show its required documents.`,
+        sources: [],
+        options
+      };
     }
-    const [docs] = await pool.query('SELECT DISTINCT document_name FROM scholarship_required_documents WHERE required=TRUE ORDER BY document_name');
-    if (!docs.length) return { answer: 'No required document list is available in the portal yet. Check the specific scholarship\'s details for document requirements.', sources: [] };
-    const list = docs.map((d) => d.document_name).join(', ');
-    const follow = mentioned ? ` You were asking in the context of ${mentioned.name}.` : '';
-    return { answer: truncate(`The portal records the following commonly required documents:\n\n${list}\n\nSpecific requirements vary by scholarship — check each scholarship's details page.${follow}`), sources: docs.map((d) => ({ document_name: d.document_name })) };
+    const [docs] = await pool.query(
+      'SELECT document_name, required FROM scholarship_required_documents WHERE scholarship_id=? ORDER BY required DESC, document_name',
+      [mentioned.id]
+    );
+    if (!docs.length) {
+      return {
+        answer: truncate(`${greet}the portal does not have a required-document list for ${mentioned.name}. Please check with the scholarship provider for its official requirements.`),
+        sources: [{ name: mentioned.name }]
+      };
+    }
+    if (await hasCatalogWideDocumentTemplate(pool, mentioned.id, docs.length, scholarships.length)) {
+      return {
+        answer: truncate(`${greet}the portal does not have a verified document checklist specific to ${mentioned.name}. The document records currently use the same checklist for most active scholarships, so I cannot confirm that it applies to this scheme. Please check ${mentioned.provider}'s official guidelines for the mandatory documents.`),
+        sources: []
+      };
+    }
+    const list = docs.map((d) => `${d.document_name}${d.required ? ' (required)' : ' (optional)'}`).join(', ');
+    return {
+      answer: truncate(`${greet}for ${mentioned.name}, the portal lists these documents: ${list}.`),
+      sources: docs.map((d) => ({ document_name: d.document_name, scholarship: mentioned.name }))
+    };
   }
 
   if (msgLower.includes('deadline') || msgLower.includes('when is it due') || msgLower.includes('end date')) {
